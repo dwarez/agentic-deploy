@@ -1,0 +1,14 @@
+# Core AWS / SageMaker dependencies for deployment work.
+#
+# No version pins. We want the latest of each — if scripts break against
+# the latest, fix the script, not the version. Newer SDKs have better
+# error messages, more current model support, and security fixes.
+#
+# Add per-deployment extras (e.g. huggingface_hub, transformers for local
+# validation) to this file or to a deployment-specific requirements file
+# alongside it. Do not pin versions here unless you have a documented
+# reason and a plan to unpin later.
+
+sagemaker
+boto3
+awscli  # do we actually need it as a python module or we assume it's installed already?

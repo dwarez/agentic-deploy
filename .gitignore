@@ -1,0 +1,43 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Secrets / credentials
+.env
+.env.*
+!.env.example
+.role-arn
+*.pem
+credentials
+aws-credentials*
+
+# Logs and run output
+*.log
+*.run.log
+*.out
+deploy_run.out
+
+# Scratch / attempt files
+*.attempt*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
