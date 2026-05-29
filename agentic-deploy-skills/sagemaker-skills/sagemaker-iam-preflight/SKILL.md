@@ -5,95 +5,63 @@ description: 'Ensure a usable SageMaker execution role exists before deploying o
 
 # SageMaker IAM Preflight
 
-Every SageMaker resource (endpoint, model, training job) needs an **execution role** — the IAM role SageMaker assumes to access your model artifacts in S3, pull serving containers from ECR, and write logs. Most deployments fail here for one of two reasons:
+Every SageMaker resource needs an **execution role** — the IAM role SageMaker assumes to read model artifacts from S3, pull serving containers from ECR, and write logs. Most deployments fail here because the script tried to create a new role without checking if a usable one already existed, then blew up because the caller is an SSO principal.
 
-1. The script tried to create a new role without checking if a usable one already existed, then blew up on `iam:CreateRole` because the caller is an SSO principal.
-2. The script picked up a role but the trust policy didn't allow `sagemaker.amazonaws.com` to assume it, so the deployment failed mid-flight with a confusing error.
-
-This skill encodes the right order of operations: discover, validate, only create if necessary.
+This skill encodes the right order: discover, validate, only create if necessary.
 
 ## Order of operations
 
-Always run these steps in order. Do not skip ahead.
+### Step 1 — Did the user provide a role?
 
-### Step 1 — Has the user given you a role?
-
-If the user mentioned a role name or ARN in the conversation, validate that one specifically:
+Validate that one specifically:
 
 ```bash
-bash <skill-path>/scripts/check_role.sh "AmazonSageMaker-ExecutionRole-20240101T000000"
-# or
-bash <skill-path>/scripts/check_role.sh "arn:aws:iam::123456789012:role/MyRole"
+bash <skill-path>/scripts/check_role.sh "<role-name-or-arn>"
 ```
 
-If valid, the script prints the ARN to stdout and exits 0. Use that ARN; you're done.
-
-If invalid, the script tells you why on stderr (doesn't exist, wrong trust policy, etc.). Do not try to silently fix it — surface the problem to the user.
+On success it prints the ARN to stdout (exit 0). On failure it logs why on stderr. Don't try to silently fix a broken role — surface the problem.
 
 ### Step 2 — Discover existing roles
-
-If the user did not name a role, search for one:
 
 ```bash
 bash <skill-path>/scripts/check_role.sh
 ```
 
-This lists roles matching common SageMaker patterns (`AmazonSageMaker-ExecutionRole-*`, `SageMakerExecutionRole*`, etc.), **ranks them by last-used timestamp (most recent first)**, validates each one's trust policy in that order, and returns the first usable ARN. Most AWS accounts that have used SageMaker before already have one of these — you do not need to create anything.
+Lists roles matching common SageMaker patterns (`AmazonSageMaker-ExecutionRole-*`, `SageMakerExecutionRole*`, etc.), **ranks by last-used date** (most recent first), validates trust policy in that order, returns the first usable ARN. Most accounts that have used SageMaker before already have one.
 
-Why rank by last-used: in accounts with multiple SageMaker roles (e.g. an auto-generated one from 2021 plus a manually-created project role), the alphabetically-first role is rarely the actively-maintained one. The role that was assumed most recently is the one most likely to have current policies — including details like cross-account ECR pull for AWS public DLC images that newer deployments need. The script prints the ranking so the user can see which role got picked and why.
+Why rank by last-used: in accounts with multiple roles (auto-generated 2021 role + manual project role + etc.), the alphabetically-first one is rarely the actively-maintained one. The most-recently-used role is more likely to have current policies — including cross-account ECR pull. The script prints the ranking so you can see which got picked.
 
-### Step 3 — Only if Step 2 found nothing: consider creation
+### Step 3 — Create, only if discovery found nothing
 
-If `check_role.sh` exits non-zero with "no usable role found", you have two choices:
-
-**a) The user can create the role** (they have IAM permissions):
+**If the user can create** (has IAM permissions):
 
 ```bash
-bash <skill-path>/scripts/create_role.sh "SageMakerExecutionRole-Project" "my-model-bucket"
+bash <skill-path>/scripts/create_role.sh "<role-name>" "<model-bucket>"
 ```
 
-The second argument scopes S3 access to a specific bucket. If you don't know the bucket yet, omit it — the script will warn and the user can update the policy later.
+Second arg scopes S3 access to a specific bucket. Omit if unknown; script warns and the user can update the policy later.
 
-**b) The user cannot create the role** (SSO principal, restricted permissions):
+**If the user cannot create** (SSO principal — `aws-context-discovery` will have flagged this):
 
-Stop and surface this clearly. Do not retry. Do not try alternative IAM operations hoping one will work. Tell the user:
+Stop and surface this clearly. Don't retry alternative IAM operations hoping one works:
 
-> I can't find an existing SageMaker execution role in this account, and you're authenticated via SSO so you can't create one directly. To proceed, please either:
->   - Ask your AWS admin to create a SageMaker execution role and give you the ARN, or
->   - Have your admin grant your SSO permission set `iam:CreateRole`, `iam:AttachRolePolicy`, and `iam:PutRolePolicy`
+> I can't find an existing SageMaker execution role, and you're authenticated via SSO so you can't create one directly. Please either:
+>   - Ask your AWS admin for a SageMaker execution role ARN, or
+>   - Have them grant your SSO permission set `iam:CreateRole`, `iam:AttachRolePolicy`, `iam:PutRolePolicy`
 
-This wording matters. Vague messages like "permission denied, please check your access" lead to thrashing. Specific instructions get unblocked fast.
-
-## Recognizing SSO principals early
-
-The `aws-context-discovery` skill should have already surfaced this, but as a backup: if the caller ARN matches `arn:aws:sts::*:assumed-role/AWSReservedSSO_*`, assume IAM write permissions are unavailable until proven otherwise. The discovery path (Step 2) usually still works — `iam:ListRoles` and `iam:GetRole` are often available to SSO principals even when `iam:CreateRole` is not.
+Specific instructions get unblocked fast; vague "permission denied" messages don't.
 
 ## What "validated" means
 
-A role is **usable as a SageMaker execution role** when:
+A role is usable when (1) it exists, (2) its trust policy allows `sagemaker.amazonaws.com` to `sts:AssumeRole` — see `references/trust-policy.json` for the canonical form.
 
-1. It exists (you can `iam:GetRole` on it)
-2. Its trust policy allows `sagemaker.amazonaws.com` to call `sts:AssumeRole` — see `references/trust-policy.json` for the canonical form
-3. It has permissions to access the model artifacts in S3, pull from ECR, and write CloudWatch logs
+`check_role.sh` verifies these two. It does **not** deep-check permissions because comprehensive analysis is expensive (`iam:SimulatePrincipalPolicy` per action) and most existing SageMaker roles are over-permissioned via `AmazonSageMakerFullAccess`. If you suspect a permissions issue at deploy time, the deployment error will tell you which action was denied — fix it then, not preemptively.
 
-The `check_role.sh` script verifies (1) and (2). It does **not** deep-check (3), because comprehensive permission analysis is expensive (potentially many `iam:SimulatePrincipalPolicy` calls) and most existing SageMaker roles are over-permissioned via `AmazonSageMakerFullAccess` anyway. If you suspect a permissions issue at deploy time, the deployment error message will tell you exactly which action was denied — fix it then, not preemptively.
+## Minimum permissions
 
-## The minimum permissions
+`references/minimum-permissions.json` covers what SageMaker actually needs:
+- `s3:GetObject` + `s3:ListBucket` on the model artifact bucket
+- ECR pull permissions
+- CloudWatch logs and metrics
 
-When creating a new role, the bundled `references/minimum-permissions.json` covers what SageMaker actually needs for deployment:
-
-- `s3:GetObject` and `s3:ListBucket` on the model artifact bucket
-- ECR pull permissions (for serving container images)
-- CloudWatch logs and metrics (for inference logging)
-
-This is layered on top of `AmazonSageMakerFullAccess` (attached by `create_role.sh`). The managed policy is broad; the inline policy adds the bucket-specific S3 access that AWS managed policies don't cover.
-
-Replace `REPLACE_WITH_MODEL_BUCKET` in the template with the actual bucket name. The `create_role.sh` script does this automatically when given a bucket as its second argument.
-
-## What this skill does not do
-
-- Does not create roles speculatively. Existing role first; creation only as fallback.
-- Does not attempt to widen permissions on an existing role to make it work. If a role is missing something, surface that to the user — don't silently `iam:AttachRolePolicy` to a role you didn't create.
-- Does not delete or modify roles. Even cleanup is the user's call.
-- Does not check region-specific service quotas — that's a deployment-time concern handled elsewhere.
-- Does not handle cross-account roles. If the user mentions cross-account access, stop and ask for specifics rather than guessing at trust policy modifications.
+Layered on top of `AmazonSageMakerFullAccess` (attached by `create_role.sh`). Replace `REPLACE_WITH_MODEL_BUCKET` in the template with the actual bucket name — `create_role.sh` does this automatically when given a bucket as its second argument.

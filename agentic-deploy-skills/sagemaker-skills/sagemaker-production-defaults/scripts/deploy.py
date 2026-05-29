@@ -1,55 +1,12 @@
 #!/usr/bin/env python
-"""deploy.py — Create a SageMaker real-time endpoint with production defaults.
+"""Create a SageMaker real-time endpoint with production defaults.
 
-This script is intentionally explicit. Every default is in one place, every
-AWS API call is visible, and the user can edit any of it. It does not try
-to be a framework — it's a working starting point.
+Minimal usage:
+    python deploy.py --model-name <name> --image-uri <uri> \
+        --inference-ami-version <ami> --role-arn <arn> \
+        --instance-type ml.g5.xlarge --region <region>
 
-What it does, in order:
-    1. Create the SageMaker model (image + env + role + S3 artifacts)
-    2. Create the endpoint config (instance type, initial count, data capture)
-    3. Create the endpoint
-    4. Wait for the endpoint to be InService
-    5. Register autoscaling target + policy
-    6. Create CloudWatch alarms
-    7. Print summary + teardown command
-
-Usage (minimal):
-    python deploy.py \\
-        --model-name qwen3-medical \\
-        --image-uri 763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.4 \\
-        --inference-ami-version al2-ami-sagemaker-inference-gpu-3-1 \\
-        --role-arn arn:aws:iam::123456789012:role/SageMakerExecutionRole \\
-        --model-s3-uri s3://my-bucket/models/qwen3-medical/ \\
-        --instance-type ml.g5.xlarge
-
-Usage (with HuggingFace LLM env vars):
-    python deploy.py \\
-        --model-name qwen3-medical \\
-        --image-uri <vllm-dlc-uri> \\
-        --inference-ami-version al2-ami-sagemaker-inference-gpu-3-1 \\
-        --role-arn <role-arn> \\
-        --instance-type ml.g5.xlarge \\
-        --env SM_VLLM_MODEL=Qwen/Qwen3-0.6B \\
-        --env SM_VLLM_HOST=0.0.0.0 \\
-        --env SM_VLLM_TRUST_REMOTE_CODE=true \\
-        --env SM_VLLM_MAX_MODEL_LEN=4096 \\
-        --env HUGGING_FACE_HUB_TOKEN=hf_xxx
-
-Recommended chained usage (lets resolve_image_uri.py provide both URI and AMI):
-    eval "$(python serving-image-selection/scripts/resolve_image_uri.py \\
-        --family vllm --region eu-north-1 --format json | \\
-        python -c 'import json,sys; d=json.load(sys.stdin); \\
-            print(f\"IMAGE_URI={d[\\\"image_uri\\\"]}\"); \\
-            print(f\"AMI={d[\\\"inference_ami_version\\\"] or \\\"\\\"}\")')"
-    python deploy.py --image-uri "$IMAGE_URI" \\
-        ${AMI:+--inference-ami-version "$AMI"} ...
-
-Override defaults:
-    --min-capacity 2 --max-capacity 10
-    --target-invocations-per-instance 40
-    --enable-data-capture
-    --sns-alarm-topic arn:aws:sns:eu-west-1:123:my-alerts
+See the SKILL.md for full flags and the recommended chained-with-resolver pattern.
 """
 
 import argparse
@@ -63,10 +20,8 @@ import boto3
 from botocore.exceptions import ClientError
 
 
-# ---------------------------------------------------------------------------
-# Defaults — change these here, not in the call sites below.
-# See references/deployment-template.md for the reasoning behind each one.
-# ---------------------------------------------------------------------------
+# Defaults — change here, not at call sites.
+# Reasoning lives in references/deployment-template.md.
 DEFAULTS = {
     "initial_instance_count": 1,
     "min_capacity": 1,
@@ -89,7 +44,6 @@ def log(msg: str) -> None:
 
 
 def parse_env(env_args: list[str]) -> dict[str, str]:
-    """Parse repeated --env KEY=VALUE args into a dict."""
     env = {}
     for item in env_args:
         if "=" not in item:
@@ -100,20 +54,15 @@ def parse_env(env_args: list[str]) -> dict[str, str]:
 
 
 def make_endpoint_name(model_name: str, override: str | None) -> str:
-    """Produce <model-name>-<YYYYMMDD-HHMM> unless overridden."""
     if override:
         return override
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
-    # SageMaker names are limited to 63 chars and must be DNS-friendly
     base = model_name.replace("_", "-").lower()
-    return f"{base}-{stamp}"[:63]
+    return f"{base}-{stamp}"[:63]  # SageMaker names: max 63 chars, DNS-friendly
 
 
 def build_tags(args: argparse.Namespace, caller_arn: str) -> list[dict]:
-    """Standard tag set applied to every resource."""
-    # Extract a human-ish 'Owner' from the caller ARN
     owner = caller_arn.split("/")[-1] if "/" in caller_arn else caller_arn
-
     tags = [
         {"Key": "Project", "Value": args.project or args.model_name},
         {"Key": "Owner", "Value": owner},
@@ -125,21 +74,11 @@ def build_tags(args: argparse.Namespace, caller_arn: str) -> list[dict]:
     return tags
 
 
-# ---------------------------------------------------------------------------
-# Resource creation
-# ---------------------------------------------------------------------------
 def create_model(
-    sm: Any,
-    *,
-    model_name: str,
-    image_uri: str,
-    role_arn: str,
-    model_s3_uri: str | None,
-    env: dict[str, str],
-    tags: list[dict],
+    sm: Any, *, model_name: str, image_uri: str, role_arn: str,
+    model_s3_uri: str | None, env: dict[str, str], tags: list[dict],
 ) -> str:
     log(f"Creating model: {model_name}")
-
     primary_container: dict[str, Any] = {"Image": image_uri}
     if env:
         primary_container["Environment"] = env
@@ -162,20 +101,14 @@ def create_model(
 
 
 def create_endpoint_config(
-    sm: Any,
-    *,
-    config_name: str,
-    model_name: str,
-    instance_type: str,
-    initial_instance_count: int,
-    inference_ami_version: str | None,
-    data_capture_enabled: bool,
-    data_capture_s3_uri: str | None,
+    sm: Any, *, config_name: str, model_name: str, instance_type: str,
+    initial_instance_count: int, inference_ami_version: str | None,
+    data_capture_enabled: bool, data_capture_s3_uri: str | None,
     tags: list[dict],
 ) -> str:
     log(f"Creating endpoint config: {config_name}")
 
-    production_variant = {
+    production_variant: dict[str, Any] = {
         "VariantName": "AllTraffic",
         "ModelName": model_name,
         "InstanceType": instance_type,
@@ -183,15 +116,8 @@ def create_endpoint_config(
         "InitialVariantWeight": 1.0,
     }
 
-    # InferenceAmiVersion is required for vLLM DLC images using CUDA 13+.
-    # Without it, SageMaker may land the container on an older host AMI with
-    # incompatible CUDA drivers. The container then dies on startup with
-    # CannotStartContainerError and NO CloudWatch logs are ever created
-    # (the GPU/CUDA mismatch breaks initialization before logging is up).
-    #
-    # serving-image-selection knows which AMI a given image requires — pass
-    # that through here. For non-vLLM images (DJL-LMI, HF Inference), pass
-    # None and SageMaker picks a compatible default.
+    # InferenceAmiVersion required for vLLM DLC with CUDA 13+. Without it the
+    # container dies on startup with no logs. See serving-image-selection skill.
     if inference_ami_version:
         production_variant["InferenceAmiVersion"] = inference_ami_version
         log(f"  InferenceAmiVersion set to: {inference_ami_version}")
@@ -209,13 +135,8 @@ def create_endpoint_config(
             "EnableCapture": True,
             "InitialSamplingPercentage": DEFAULTS["data_capture_sampling_percent"],
             "DestinationS3Uri": data_capture_s3_uri,
-            "CaptureOptions": [
-                {"CaptureMode": "Input"},
-                {"CaptureMode": "Output"},
-            ],
-            "CaptureContentTypeHeader": {
-                "JsonContentTypes": ["application/json"],
-            },
+            "CaptureOptions": [{"CaptureMode": "Input"}, {"CaptureMode": "Output"}],
+            "CaptureContentTypeHeader": {"JsonContentTypes": ["application/json"]},
         }
 
     try:
@@ -238,7 +159,7 @@ def create_endpoint(sm: Any, *, endpoint_name: str, config_name: str, tags: list
 
 
 def wait_for_endpoint(sm: Any, endpoint_name: str, timeout_minutes: int = 30) -> None:
-    log(f"Waiting for endpoint {endpoint_name} to reach InService (up to {timeout_minutes} min)...")
+    log(f"Waiting for {endpoint_name} to reach InService (up to {timeout_minutes} min)...")
     start = time.time()
     deadline = start + (timeout_minutes * 60)
 
@@ -248,7 +169,7 @@ def wait_for_endpoint(sm: Any, endpoint_name: str, timeout_minutes: int = 30) ->
         elapsed = int(time.time() - start)
 
         if status == "InService":
-            log(f"Endpoint InService after {elapsed}s")
+            log(f"InService after {elapsed}s")
             return
         if status == "Failed":
             reason = resp.get("FailureReason", "(no reason given)")
@@ -261,15 +182,8 @@ def wait_for_endpoint(sm: Any, endpoint_name: str, timeout_minutes: int = 30) ->
 
 
 def register_autoscaling(
-    *,
-    endpoint_name: str,
-    variant_name: str,
-    min_capacity: int,
-    max_capacity: int,
-    target_invocations: int,
-    scale_in_cooldown: int,
-    scale_out_cooldown: int,
-    region: str,
+    *, endpoint_name: str, variant_name: str, min_capacity: int, max_capacity: int,
+    target_invocations: int, scale_in_cooldown: int, scale_out_cooldown: int, region: str,
 ) -> None:
     log(f"Registering autoscaling: min={min_capacity} max={max_capacity} target={target_invocations}/min")
     appscaling = boto3.client("application-autoscaling", region_name=region)
@@ -282,7 +196,6 @@ def register_autoscaling(
         MinCapacity=min_capacity,
         MaxCapacity=max_capacity,
     )
-
     appscaling.put_scaling_policy(
         PolicyName=f"{endpoint_name}-target-tracking",
         ServiceNamespace="sagemaker",
@@ -300,13 +213,7 @@ def register_autoscaling(
     )
 
 
-def create_alarms(
-    *,
-    endpoint_name: str,
-    variant_name: str,
-    sns_topic_arn: str | None,
-    region: str,
-) -> None:
+def create_alarms(*, endpoint_name: str, variant_name: str, sns_topic_arn: str | None, region: str) -> None:
     log(f"Creating CloudWatch alarms for {endpoint_name}")
     cw = boto3.client("cloudwatch", region_name=region)
     actions = [sns_topic_arn] if sns_topic_arn else []
@@ -322,7 +229,7 @@ def create_alarms(
             "ExtendedStatistic": "p99",
             "Threshold": DEFAULTS["alarm_latency_threshold_ms"] * 1000,  # microseconds
             "ComparisonOperator": "GreaterThanThreshold",
-            "AlarmDescription": "Model inference latency p99 > 30s — model is slow or stuck",
+            "AlarmDescription": "Model inference latency p99 > 30s",
         },
         {
             "AlarmName": f"{endpoint_name}-Invocation5XXErrors",
@@ -330,7 +237,7 @@ def create_alarms(
             "Statistic": "Sum",
             "Threshold": DEFAULTS["alarm_5xx_threshold_count"],
             "ComparisonOperator": "GreaterThanThreshold",
-            "AlarmDescription": "5XX errors > 5 in 5min — container is crashing or failing health checks",
+            "AlarmDescription": "5XX errors > 5 in 5min",
         },
         {
             "AlarmName": f"{endpoint_name}-OverheadLatencyP99",
@@ -338,7 +245,7 @@ def create_alarms(
             "ExtendedStatistic": "p99",
             "Threshold": DEFAULTS["alarm_overhead_threshold_ms"] * 1000,
             "ComparisonOperator": "GreaterThanThreshold",
-            "AlarmDescription": "SageMaker platform overhead latency p99 > 2s — platform issue, not model",
+            "AlarmDescription": "Platform overhead latency p99 > 2s",
         },
     ]
 
@@ -363,60 +270,50 @@ def create_alarms(
         cw.put_metric_alarm(**params)
 
     if not sns_topic_arn:
-        log("WARNING: no SNS topic specified — alarms created but won't notify anyone.")
-        log("         Pass --sns-alarm-topic arn:aws:sns:... to wire up notifications.")
+        log("WARNING: no --sns-alarm-topic — alarms exist but won't notify anyone.")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 
     # Required
-    p.add_argument("--model-name", required=True, help="SageMaker model name (also used as base for endpoint name)")
-    p.add_argument("--image-uri", required=True, help="Serving container image URI (from serving-image-selection)")
-    p.add_argument("--role-arn", required=True, help="SageMaker execution role ARN (from sagemaker-iam-preflight)")
+    p.add_argument("--model-name", required=True)
+    p.add_argument("--image-uri", required=True, help="From serving-image-selection")
+    p.add_argument("--role-arn", required=True, help="From sagemaker-iam-preflight")
     p.add_argument("--instance-type", required=True, help="e.g. ml.g5.xlarge")
+    p.add_argument("--region", required=True, help="From aws-context-discovery")
 
     # Conditional
-    p.add_argument("--model-s3-uri", default=None, help="S3 URI to model artifacts (omit when loading from HF Hub)")
-    p.add_argument("--env", action="append", default=[], help="Container env var, KEY=VALUE. Repeatable.")
+    p.add_argument("--model-s3-uri", default=None, help="Omit when loading from HF Hub")
+    p.add_argument("--env", action="append", default=[], help="KEY=VALUE; repeatable")
     p.add_argument(
-        "--inference-ami-version",
-        default=None,
+        "--inference-ami-version", default=None,
         help=(
-            "InferenceAmiVersion to set on the ProductionVariant. REQUIRED for "
-            "vLLM DLC images with CUDA 13+ (e.g. al2-ami-sagemaker-inference-gpu-3-1). "
-            "Without this, the container dies on startup with CannotStartContainerError "
-            "and NO CloudWatch logs are ever created. serving-image-selection's "
-            "resolve_image_uri.py --format json returns the required AMI for each image. "
-            "Pass None to use SageMaker's default AMI (fine for older CUDA or non-vLLM)."
+            "REQUIRED for vLLM DLC with CUDA 13+ (e.g. al2-ami-sagemaker-inference-gpu-3-1). "
+            "Without this, container dies on startup with no logs. "
+            "Use serving-image-selection's resolve_image_uri.py --format json to get this value."
         ),
     )
 
     # Naming
-    p.add_argument("--endpoint-name", default=None, help="Override default endpoint name (default: <model-name>-<timestamp>)")
-    p.add_argument("--project", default=None, help="Tag value for 'Project' (default: model name)")
-    p.add_argument("--environment", default=DEFAULTS["environment_tag"], help=f"Tag value for 'Environment' (default: {DEFAULTS['environment_tag']})")
+    p.add_argument("--endpoint-name", default=None, help="Default: <model-name>-<timestamp>")
+    p.add_argument("--project", default=None, help="Tag value (default: model name)")
+    p.add_argument("--environment", default=DEFAULTS["environment_tag"])
 
     # Capacity / scaling
     p.add_argument("--initial-instance-count", type=int, default=DEFAULTS["initial_instance_count"])
     p.add_argument("--min-capacity", type=int, default=DEFAULTS["min_capacity"])
     p.add_argument("--max-capacity", type=int, default=DEFAULTS["max_capacity"])
     p.add_argument("--target-invocations-per-instance", type=int, default=DEFAULTS["target_invocations_per_instance"])
-    p.add_argument("--no-autoscaling", action="store_true", help="Skip autoscaling registration (NOT RECOMMENDED)")
+    p.add_argument("--no-autoscaling", action="store_true", help="NOT RECOMMENDED")
 
-    # Data capture (opt-in — disabled by default to avoid surprise S3 costs)
-    p.add_argument("--enable-data-capture", action="store_true", help="Enable request/response logging to S3 (off by default)")
-    p.add_argument("--data-capture-s3-uri", default=None, help="S3 URI for data capture (default: s3://sagemaker-<region>-<account>/<endpoint>/data-capture/)")
+    # Data capture (off by default)
+    p.add_argument("--enable-data-capture", action="store_true", help="Log requests/responses to S3")
+    p.add_argument("--data-capture-s3-uri", default=None)
 
     # Alarms
     p.add_argument("--sns-alarm-topic", default=None, help="SNS topic ARN for alarm notifications")
-    p.add_argument("--no-alarms", action="store_true", help="Skip CloudWatch alarms")
-
-    # AWS
-    p.add_argument("--region", required=True, help="AWS region (from aws-context-discovery)")
+    p.add_argument("--no-alarms", action="store_true")
 
     args = p.parse_args()
 
@@ -424,97 +321,63 @@ def main() -> int:
     endpoint_name = make_endpoint_name(args.model_name, args.endpoint_name)
     config_name = f"{endpoint_name}-config"
 
-    # AWS clients
     sts = boto3.client("sts", region_name=args.region)
     sm = boto3.client("sagemaker", region_name=args.region)
     caller_arn = sts.get_caller_identity()["Arn"]
     account_id = sts.get_caller_identity()["Account"]
 
-    # Default data capture URI if not provided and capture is enabled
     if args.enable_data_capture and not args.data_capture_s3_uri:
         args.data_capture_s3_uri = f"s3://sagemaker-{args.region}-{account_id}/{endpoint_name}/data-capture/"
         log(f"Data capture URI defaulted to: {args.data_capture_s3_uri}")
 
     tags = build_tags(args, caller_arn)
 
-    # 1. Model
     create_model(
-        sm,
-        model_name=args.model_name,
-        image_uri=args.image_uri,
-        role_arn=args.role_arn,
-        model_s3_uri=args.model_s3_uri,
-        env=env_dict,
-        tags=tags,
+        sm, model_name=args.model_name, image_uri=args.image_uri,
+        role_arn=args.role_arn, model_s3_uri=args.model_s3_uri,
+        env=env_dict, tags=tags,
     )
-
-    # 2. Endpoint config
     create_endpoint_config(
-        sm,
-        config_name=config_name,
-        model_name=args.model_name,
-        instance_type=args.instance_type,
-        initial_instance_count=args.initial_instance_count,
+        sm, config_name=config_name, model_name=args.model_name,
+        instance_type=args.instance_type, initial_instance_count=args.initial_instance_count,
         inference_ami_version=args.inference_ami_version,
         data_capture_enabled=args.enable_data_capture,
-        data_capture_s3_uri=args.data_capture_s3_uri,
-        tags=tags,
+        data_capture_s3_uri=args.data_capture_s3_uri, tags=tags,
     )
-
-    # 3. Endpoint
     create_endpoint(sm, endpoint_name=endpoint_name, config_name=config_name, tags=tags)
-
-    # 4. Wait
     wait_for_endpoint(sm, endpoint_name)
 
-    # 5. Autoscaling
     if not args.no_autoscaling:
         register_autoscaling(
-            endpoint_name=endpoint_name,
-            variant_name="AllTraffic",
-            min_capacity=args.min_capacity,
-            max_capacity=args.max_capacity,
+            endpoint_name=endpoint_name, variant_name="AllTraffic",
+            min_capacity=args.min_capacity, max_capacity=args.max_capacity,
             target_invocations=args.target_invocations_per_instance,
             scale_in_cooldown=DEFAULTS["scale_in_cooldown_seconds"],
             scale_out_cooldown=DEFAULTS["scale_out_cooldown_seconds"],
             region=args.region,
         )
     else:
-        log("WARNING: autoscaling skipped per --no-autoscaling. Endpoint will not scale with traffic.")
+        log("WARNING: autoscaling skipped. Endpoint won't scale with traffic.")
 
-    # 6. Alarms
     if not args.no_alarms:
         create_alarms(
-            endpoint_name=endpoint_name,
-            variant_name="AllTraffic",
-            sns_topic_arn=args.sns_alarm_topic,
-            region=args.region,
+            endpoint_name=endpoint_name, variant_name="AllTraffic",
+            sns_topic_arn=args.sns_alarm_topic, region=args.region,
         )
 
-    # 7. Summary
+    # Summary
     log("")
-    log("=" * 70)
-    log("Deployment complete.")
-    log(f"  Endpoint:        {endpoint_name}")
-    log(f"  Endpoint config: {config_name}")
-    log(f"  Model:           {args.model_name}")
-    log(f"  Instance type:   {args.instance_type}")
+    log(f"Deployment complete: {endpoint_name}")
+    log(f"  Instance:        {args.instance_type}")
     log(f"  Autoscaling:     {'OFF' if args.no_autoscaling else f'{args.min_capacity}-{args.max_capacity} instances'}")
-    log(f"  Data capture:    {args.data_capture_s3_uri if args.enable_data_capture else 'OFF (pass --enable-data-capture to turn on)'}")
+    log(f"  Data capture:    {args.data_capture_s3_uri if args.enable_data_capture else 'OFF (pass --enable-data-capture)'}")
     log("")
-    log("Test invocation:")
-    log(f"  aws sagemaker-runtime invoke-endpoint \\")
-    log(f"    --endpoint-name {endpoint_name} \\")
-    log(f"    --content-type application/json \\")
-    log(f"    --body '{{\"prompt\": \"hello\"}}' \\")
-    log(f"    --region {args.region} \\")
-    log(f"    /tmp/response.json && cat /tmp/response.json")
-    log("")
-    log("Teardown when finished:")
-    log(f"  bash teardown.sh {endpoint_name} {args.region}")
-    log("=" * 70)
+    log(f"Test:     aws sagemaker-runtime invoke-endpoint --endpoint-name {endpoint_name} \\")
+    log(f"            --content-type application/json --body '{{\"prompt\": \"hello\"}}' \\")
+    log(f"            --region {args.region} /tmp/response.json && cat /tmp/response.json")
+    log(f"Teardown: bash teardown.sh {endpoint_name} {args.region}")
 
-    # Machine-readable summary on stdout for downstream scripting
+    # Machine-readable summary for downstream scripting
     print(json.dumps({
         "endpoint_name": endpoint_name,
         "endpoint_config_name": config_name,
