@@ -1,6 +1,6 @@
 # SageMaker Deployment Plan: Qwen3 0.6B
 
-Status: deployed and smoke-tested.
+Status: torn down.
 
 ## Goal
 
@@ -58,10 +58,20 @@ Resolved choice after preflight:
 - Inference AMI: `al2-ami-sagemaker-inference-gpu-3-1`
 - Instance type: `ml.g4dn.xlarge` as the cheapest compatible GPU starting point
 - Endpoint: `qwen3-0-6b-vllm-20260529-0845`
-- Endpoint status: `InService`
-- Autoscaling: min `1`, max `2`, target `20` invocations/min/instance
-- CloudWatch alarms: created, without SNS notification actions
+- Endpoint status: deleted and verified absent
+- Autoscaling: deleted and verified absent
+- CloudWatch alarms: deleted and verified absent
 - Data capture: off
+
+Teardown result:
+
+- Deleted endpoint `qwen3-0-6b-vllm-20260529-0845`.
+- Deleted endpoint config `qwen3-0-6b-vllm-20260529-0845-config`.
+- Deleted SageMaker model `qwen3-0-6b-vllm-20260529-0845`.
+- Deleted the three CloudWatch alarms created for this endpoint.
+- Deleted the autoscaling policy and deregistered the scalable target.
+- Did not delete the shared SageMaker execution role.
+- Data capture was disabled, so no deployment-created capture objects were deleted.
 
 ## Runtime Configuration
 

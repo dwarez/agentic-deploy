@@ -1,0 +1,1 @@
+There are some "version control" folders (like old versions of the skills folder) because I was not keeping track with git yet. I'll just leave them there if we ever care to look back at what was wrong but I'll never touch those files again. 

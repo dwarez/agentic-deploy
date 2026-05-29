@@ -1,14 +1,18 @@
 # SageMaker Qwen3 Endpoint Handoff
 
+Status: torn down on 2026-05-29 at 11:04:05+02:00.
+
 ## Endpoint
 
 - Endpoint name: `qwen3-0-6b-vllm-20260529-0845`
 - Region: `us-east-1`
 - AWS profile used: `HF-Sandbox-access-754289655784`
 - Instance type: `ml.g4dn.xlarge`
-- Autoscaling: min `1`, max `2`
+- Autoscaling: deleted
 - Data capture: off
-- Alarm notifications: CloudWatch alarms exist, but no SNS topic is attached
+- Alarm notifications: deleted with the CloudWatch alarms
+
+This endpoint, its endpoint config, model, CloudWatch alarms, autoscaling policy, and autoscaling target have been deleted. The invocation example below is retained for audit/history only.
 
 ## Recommended Request Shape
 
@@ -57,7 +61,7 @@ Hello! How can I assist you today?
 
 ## Teardown
 
-When this endpoint is no longer needed, stop billing by deleting it:
+Teardown command that was run:
 
 ```bash
 AWS_PROFILE=HF-Sandbox-access-754289655784 \
@@ -68,4 +72,13 @@ bash /Users/dwarez/hf/projects/agentic-deploy/agentic-deploy-skills/sagemaker-sk
   us-east-1
 ```
 
-The endpoint bills while min capacity is `1`.
+The endpoint billed while min capacity was `1`; it has now been deleted.
+
+Verification after teardown:
+
+- `describe-endpoint`: not found
+- `describe-endpoint-config`: not found
+- `describe-model`: not found
+- CloudWatch alarm lookup: no alarms returned
+- Autoscaling policy lookup: no policies returned
+- Autoscaling target lookup: no targets returned

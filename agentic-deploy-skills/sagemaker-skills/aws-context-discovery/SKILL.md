@@ -61,7 +61,7 @@ Look at the `Arn` field from `get-caller-identity`. The patterns matter:
 
 If the caller is an SSO assumed-role, surface this to the user immediately, before later skills fail on `iam:CreateRole`:
 
-> Heads up: you're authenticated via SSO (`AWSReservedSSO_HF-Sandbox-access_...`). SSO principals usually can't create IAM roles directly. If we need a SageMaker execution role, I'll first look for an existing one in the account — if none exists, you'll need to ask whoever manages your AWS access to create one (or grant you `iam:CreateRole`).
+> Heads up: you're authenticated via SSO (`AWSReservedSSO_<PermissionSetName>_...`). SSO principals usually can't create IAM roles directly. If we need a SageMaker execution role, I'll first look for an existing one in the account — if none exists, you'll need to ask whoever manages your AWS access to create one (or grant you `iam:CreateRole`).
 
 This is the single most important thing this skill does. Surfacing it now turns a confusing mid-deployment error into a five-second conversation.
 
@@ -86,7 +86,7 @@ If you need to read raw config (e.g. to list available profiles), `~/.aws/config
 
 After running discovery, briefly tell the user what you found — one or two lines, not a wall of text:
 
-> Working with profile `dwarez-hf` in `eu-west-1`, account `754289655784`. You're authenticated via SSO, so we'll need to use an existing IAM role rather than create one.
+> Working with profile `myprofile` in `eu-west-1`, account `123456789012`. You're authenticated via SSO, so we'll need to use an existing IAM role rather than create one.
 
 Then proceed. Do not ask the user to confirm the region you just read from their config — they configured it; that is the confirmation.
 
