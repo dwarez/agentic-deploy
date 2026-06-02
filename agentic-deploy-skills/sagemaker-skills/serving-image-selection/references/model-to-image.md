@@ -70,16 +70,31 @@ Any vLLM CLI flag works: uppercase, replace dashes with underscores, prepend `SM
 
 ## TEI DLC
 
-Resolved through the same `get_huggingface_llm_image_uri` helper with a different `backend` argument:
+Constructed directly by the resolver. Repo names differ by accelerator:
 
-- `backend="huggingface-tei"` → GPU variant
-- `backend="huggingface-tei-cpu"` → CPU variant
+- GPU variant: repo `tei`
+- CPU variant: repo `tei-cpu`
 
-Instance type drives the choice:
+URI pattern:
+```
+683313688378.dkr.ecr.us-east-1.amazonaws.com/<repo>:<tag>
+```
+
+Example: `683313688378.dkr.ecr.us-east-1.amazonaws.com/tei-cpu:2.0.1-tei1.8.2-cpu-py310-ubuntu22.04`
+
+Account ID `683313688378` is for HuggingFace-published DLCs — different from the AWS-generic DLC account (`763104351884`) used by vLLM and `huggingface-pytorch-inference`. This is because the HF team publishes TEI on their own pipeline.
+
+Instance type drives CPU vs GPU choice:
 - `ml.g*`, `ml.p*`, `ml.inf*` → GPU variant
 - `ml.c*`, `ml.m*`, `ml.t*` → CPU variant
 
 CPU embeddings are dramatically cheaper than GPU and often fast enough — `ml.c6i.2xlarge` (~$0.20/hr) is a common starting point. GPU is needed for large embedding models (>1B params) or sustained high throughput.
+
+### TEI is single-region (us-east-1 only)
+
+HuggingFace publishes the TEI DLC to `us-east-1` only. The resolver always returns the us-east-1 URI even when called with a different `--region`, and logs a note about the cross-region pull behavior.
+
+For endpoints in non-us-east-1 regions: the image is pulled cross-region on first use and on scale-out events. This adds a few minutes to those specific operations but does not affect ongoing invocation latency (the image is cached on the host). If this matters for your workload — frequent scale-out, tight cold-start SLAs — mirror to your region's ECR with `mirror_image.sh` (same workflow as the staleness workaround below).
 
 ### TEI environment variables
 
@@ -96,9 +111,9 @@ TEI's env contract is much simpler than vLLM's — no host-binding to configure,
 
 TEI bakes architecture support into the image. The current upstream version supports BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert. The AWS-published DLC sometimes lags upstream by months — if a recent architecture isn't supported, the deployment fails with an "unsupported architecture" error during model load.
 
-### Workaround for stale AWS DLC
+### Workaround for stale AWS DLC or cross-region
 
-If the upstream TEI version supports a model architecture but the AWS DLC doesn't yet, mirror the upstream image from GHCR:
+If the published TEI DLC lacks an architecture you need (staleness) or cross-region pulls are biting you (latency), mirror the upstream image from GHCR:
 
 ```bash
 PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
@@ -106,11 +121,23 @@ PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
     tei-mirror)
 ```
 
-Then pass the resulting URI directly to `deploy.py --image-uri`, bypassing the SDK helper. Upstream TEI images are CPU/GPU-flavored too — pick the right tag (the GHCR registry has `:cpu-<version>` tags for CPU builds).
+Then pass the resulting URI directly to `deploy.py --image-uri`. Upstream TEI images are CPU/GPU-flavored too — pick the right tag (the GHCR registry has `:cpu-<version>` tags for CPU builds).
 
 ## HuggingFace Inference Toolkit (the generic one)
 
 For HuggingFace models that are neither text generation nor embeddings — typical examples: BERT-based classifiers, NER models, QA models, summarizers, image classifiers, vision-text models.
 
-Resolved through `image_uris.retrieve(framework="huggingface", ...)`. Larger image than TEI, slower cold start, but supports the full transformers/pipelines surface area. Use this only when TEI and vLLM don't fit.
+Constructed by the resolver with manual URI construction:
+
+```
+<dlc-account>.dkr.ecr.<region>.amazonaws.com/huggingface-pytorch-inference:<tag>
+```
+
+Account ID is from `DLC_ACCOUNTS` (shared with vLLM). Tag uses the `<pytorch>-transformers<X>-<gpu|cpu>-py<Y>-<...>` format. Example: `2.6.0-transformers4.51.3-gpu-py312-cu124-ubuntu22.04`.
+
+`--instance-type` is required so the resolver can pick CPU vs GPU. Larger image than TEI, slower cold start, but supports the full transformers/pipelines surface area. Use this only when TEI and vLLM don't fit.
+
+## Why no DJL-LMI
+
+The resolver has a `resolve_djl_lmi()` function, but it's stubbed — it raises `SystemExit` with instructions for the future maintainer. Reasoning: we recommend the AWS vLLM DLC for LLM serving (better logging, current vLLM features, actively maintained), so DJL-LMI isn't part of our defaults. If a specific deployment needs it, set `FALLBACK_DJL_LMI_TAG` and implement the function body following the same pattern as `resolve_hf_inference()`.
 

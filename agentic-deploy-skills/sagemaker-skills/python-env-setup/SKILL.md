@@ -1,6 +1,6 @@
 ---
 name: python-env-setup
-description: 'Set up an isolated Python environment for SageMaker / AWS work, with the right Python version and current SDK versions. Use this skill whenever Python code will be executed for a SageMaker deployment, training job, or any AWS automation — including when about to run `pip install`, when about to invoke the `sagemaker` SDK or `boto3`, when creating or activating a virtualenv, or when the user asks to "set up the environment". Never use system Python and never `pip install` into it. Always isolate. This skill prevents the most common failure modes: wrong Python version, dependency conflicts, and stale SDKs.'
+description: 'Set up an isolated Python environment for SageMaker / AWS work, with the right Python version and current boto3. Use this skill whenever Python code will be executed for a SageMaker deployment, training job, or any AWS automation — including when about to run `pip install`, when about to invoke `boto3`, when creating or activating a virtualenv, or when the user asks to "set up the environment". Never use system Python and never `pip install` into it. Always isolate. This skill prevents the most common failure modes: wrong Python version, dependency conflicts, and stale SDKs.'
 ---
 
 # Python Environment Setup for SageMaker
@@ -11,9 +11,20 @@ Most SageMaker deployment failures that look like AWS problems are actually Pyth
 
 1. **Never use the system Python.** Always work inside an isolated environment.
 2. **Pin the Python version, not the package versions.** Use 3.10, 3.11, or 3.12. Avoid 3.13+ — ML libraries lag on wheel availability and dependency resolution breaks in confusing ways.
-3. **Install the latest of each package.** Don't defensively pin `sagemaker<3` or similar. If a script breaks against the current SDK, fix the script — newer SDKs have current model support and security fixes. Only pin if the user explicitly requires a specific version.
-4. **Check installed versions correctly.** Use `importlib.metadata.version("package-name")`, never `module.__version__`. The latter is inconsistent across packages and silently absent on some (notably `sagemaker`), causing scripts to fail confusingly.
-5. **Prefer the AWS CLI over `boto3` for orchestration.** For straightforward create/describe/delete operations, `aws sagemaker create-endpoint` and friends are simpler. Reach for `boto3` and the `sagemaker` SDK when you need helper functions the CLI doesn't have (image URI resolution, autoscaling registration). Don't install Python deps you don't need.
+3. **Install the latest of each package.** Don't defensively pin `boto3` or `awscli` to an old version. Newer ones have better error messages, more current API surface, and security fixes. Only pin if the user explicitly requires a specific version.
+4. **Check installed versions correctly.** Use `importlib.metadata.version("package-name")`, never `module.__version__`. The latter is inconsistent across packages.
+5. **Use boto3 directly, not the SageMaker Python SDK.** This is a deliberate project decision — see "Why no sagemaker package" below. For straightforward create/describe/delete operations, the AWS CLI is also fine; reach for boto3 in scripts that need programmatic control flow.
+
+## Why no `sagemaker` package
+
+The SageMaker Python SDK (`pip install sagemaker`) is **not** a dependency of this project. Our scripts use `boto3` directly and construct image URIs manually. This is intentional:
+
+- **The SDK v3 release (Nov 2025) removed the URI helpers we relied on** (`image_uris.retrieve`, `get_huggingface_llm_image_uri`). The whole v2 `Estimator`/`Model`/`Predictor` hierarchy is gone, replaced by an opaque `ModelBuilder` that doesn't fit our explicit-stages design.
+- **The SDK is a moving target.** Major rewrites between v2 and v3, and v3 has had multiple ongoing regressions (including SSO assumed-role credential bugs that affect our typical use case).
+- **The SDK can't target HuggingFace-published images.** Even when the helpers worked, they only resolved AWS-published DLCs. Our project specifically wants to use HuggingFace's own DLCs (and eventually other partner images), which the SDK helpers don't know about.
+- **boto3 is stable.** It's the underlying AWS API client; it doesn't break across SageMaker SDK releases.
+
+If a future contributor reaches for `from sagemaker import ...`, stop and ask why. The answer is almost always "use boto3 instead" or "construct the URI in `resolve_image_uri.py`".
 
 ## How to set up
 
@@ -30,11 +41,11 @@ Manual equivalent:
 ```bash
 # Preferred: uv
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python --upgrade sagemaker boto3 awscli
+uv pip install --python .venv/bin/python --upgrade boto3 awscli
 
 # Fallback: stdlib venv
 python3.12 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip sagemaker boto3 awscli
+.venv/bin/python -m pip install --upgrade pip boto3 awscli
 ```
 
 After setup, **invoke the env's Python explicitly** rather than `source .venv/bin/activate`:
@@ -51,19 +62,13 @@ This works the same in scripts, interactive shells, and agent tool calls.
 .venv/bin/python <skill-path>/scripts/check_versions.py
 ```
 
-Prints versions of `sagemaker`, `boto3`, `botocore`, `awscli`. Uses `importlib.metadata.version()` so it works on every package, including ones without `__version__`. Pass arbitrary names: `... check_versions.py transformers huggingface_hub`.
+Prints versions of `boto3`, `botocore`, `awscli`. Uses `importlib.metadata.version()` so it works on every package, including ones without `__version__`. Pass arbitrary names: `... check_versions.py transformers huggingface_hub`.
 
 ## Deployment-specific extras
 
-Default `requirements.txt` covers SageMaker orchestration. Some deployments need extras (`huggingface_hub` for model inspection, `transformers` for tokenizer validation). Add these to a deployment-specific requirements file in the project, install with the env's Python, don't pin unless there's a reason.
+Default `requirements.txt` covers SageMaker orchestration via boto3. Some deployments need extras (`huggingface_hub` for model inspection, `transformers` for tokenizer validation). Add these to a deployment-specific requirements file in the project, install with the env's Python, don't pin unless there's a reason.
 
 ## Common pitfalls
-
-**`module 'sagemaker' has no attribute '__version__'`**
-This attribute doesn't exist on this package. Use `importlib.metadata.version("sagemaker")`.
-
-**`ModuleNotFoundError: No module named 'sagemaker.huggingface'`**
-The SDK split integrations into extras. Install `sagemaker[huggingface]` — but first check if you actually need the SDK helper or if a direct AWS CLI call would do.
 
 **Mysterious `pip install` resolution errors**
 Almost always Python 3.13+ trying to install packages without wheels yet, or installing into a polluted system Python. Recreate at 3.12: `rm -rf .venv && bash setup_env.sh .venv 3.12`.
@@ -71,5 +76,8 @@ Almost always Python 3.13+ trying to install packages without wheels yet, or ins
 **`pip install` succeeded but the script says "module not found"**
 You installed into a different interpreter than the one running the script. Always invoke Python explicitly: `.venv/bin/python -m pip install ...` and `.venv/bin/python deploy.py`.
 
-**SDK call fails with "unknown parameter"**
-Your SDK is older than the API surface. Upgrade with `.venv/bin/python -m pip install --upgrade sagemaker boto3`. Don't downgrade the script to match an old SDK.
+**boto3 call fails with "unknown parameter"**
+Your boto3 is older than the API surface. Upgrade with `.venv/bin/python -m pip install --upgrade boto3`. Don't downgrade the script to match an old version.
+
+**Someone asks why `sagemaker` isn't in requirements.txt**
+Point them at "Why no `sagemaker` package" above. Adding it back would couple our scripts to a moving target and reintroduce a category of breakage we deliberately removed.

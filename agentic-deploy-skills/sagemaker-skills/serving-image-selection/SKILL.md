@@ -11,7 +11,7 @@ The serving container is the single thing most likely to break a SageMaker deplo
 
 For any HuggingFace text-generation LLM (Llama, Qwen, Mistral, Mixtral, DeepSeek, Phi, Gemma, GPT-OSS, etc.), use the **AWS vLLM Deep Learning Container**.
 
-**Do not use TGI.** Text Generation Inference is archived as of late 2025. The SageMaker SDK helper `get_huggingface_llm_image_uri` points to TGI; redirect to vLLM. Models released after the archive (Qwen3 most famously) fail ping health checks on TGI.
+**Do not use TGI.** Text Generation Inference is archived as of late 2025. The SageMaker SDK v2 helper `get_huggingface_llm_image_uri` pointed to TGI; SDK v3 removed that helper entirely. Either way, redirect to vLLM. Models released after the TGI archive (Qwen3 most famously) fail ping health checks on TGI.
 
 ## Quick decision
 
@@ -19,10 +19,10 @@ For any HuggingFace text-generation LLM (Llama, Qwen, Mistral, Mixtral, DeepSeek
 |---|---|
 | HuggingFace LLM (text generation) | vLLM DLC — `resolve_image_uri.py --family vllm` |
 | HuggingFace embeddings or rerankers | TEI DLC — `--family tei --instance-type <type>` |
-| HuggingFace classifiers, NER, QA, summarization, etc. | HF Inference Toolkit — `--family hf-inference` |
+| HuggingFace classifiers, NER, QA, summarization, etc. | HF Inference Toolkit — `--family hf-inference --instance-type <type>` |
 | Amazon Nova | SageMaker JumpStart container |
 | Custom inference code | BYOC — user provides URI |
-| User specifically wants DJL | DJL-LMI — `--family djl-lmi` |
+| User specifically wants DJL-LMI | Currently not supported — see resolver script for how to enable |
 
 Full table with reasoning in `references/model-to-image.md`.
 
@@ -46,7 +46,7 @@ The script queries ECR Public Gallery for current `*-sagemaker-v*` tags. `--pref
 
 If ECR query fails (no creds, no network), the script falls back to `FALLBACK_VLLM_TAG` (a known-good tag at script update time).
 
-**There's no SDK helper for the vLLM DLC.** AWS publishes the DLC but `sagemaker.image_uris.retrieve` doesn't cover it. The script hardcodes the regional account-ID map (mostly `763104351884`, some regions differ) and constructs the URI directly. For DJL-LMI and HF Inference, the script wraps the SDK helper with a mandatory `region=` argument — never call `image_uris.retrieve` without `region` or it silently picks the session region.
+**The resolver does not use the SageMaker Python SDK** for any family. The SDK v3 (Nov 2025) removed the URI helpers we used to rely on (`image_uris.retrieve`, `get_huggingface_llm_image_uri`), and even when those existed they couldn't target HuggingFace-published images — which is a load-bearing requirement for this project. We construct URIs manually: a regional account-ID map (`DLC_ACCOUNTS`, mostly `763104351884`, some regions differ), a separate account ID for HF-published images (`HF_TEI_ACCOUNT_ID = "683313688378"`), and family-specific fallback tags. See `python-env-setup` SKILL.md ("Why no `sagemaker` package") for the full rationale.
 
 ## InferenceAmiVersion — required for current vLLM DLC
 
@@ -61,13 +61,13 @@ The CUDA/driver mismatch breaks initialization before logging starts. This routi
 
 **Rule of thumb**: any image tag containing `cu130` or later requires `InferenceAmiVersion`. Use `--format json` on the resolver to get the right value, then pass it to `deploy.py --inference-ami-version`.
 
-This is a vLLM-specific concern. TEI, DJL-LMI, and the generic HF Inference Toolkit do not need an AMI override at the moment — their SDK helpers handle compatible-AMI selection internally.
+This is a vLLM-specific concern. TEI and HF Inference Toolkit images don't need an `InferenceAmiVersion` override — they ship with CUDA versions compatible with current default AMIs. If that changes in the future, add the relevant CUDA version to `CUDA_TO_AMI` in the resolver.
 
 ## TEI for embedding and reranker models
 
 Embedding and reranker models use a different DLC: **Text Embeddings Inference (TEI)**. It is purpose-built for this workload — small image, fast cold starts, dynamic batching, no model graph compilation. Use it for any model from sentence-transformers, BAAI/bge-*, Snowflake/snowflake-arctic-embed-*, intfloat/e5-*, mixedbread-ai/mxbai-*, and the like.
 
-TEI has **two variants**: GPU (`huggingface-tei`) and CPU (`huggingface-tei-cpu`). The resolver picks based on instance type:
+TEI has **two variants**: GPU (repo `tei`) and CPU (repo `tei-cpu`). The resolver picks based on instance type:
 
 ```bash
 # CPU embeddings — cheap, often the right answer for small models
@@ -80,6 +80,14 @@ python <skill-path>/scripts/resolve_image_uri.py --family tei \
 ```
 
 `--instance-type` is required for TEI. The CPU variant on a GPU instance wastes hardware; the GPU variant on a CPU instance fails to start.
+
+### TEI is single-region — published only to us-east-1
+
+HuggingFace publishes the TEI DLC to `683313688378.dkr.ecr.us-east-1.amazonaws.com` only — no other regions. The resolver always returns the us-east-1 URI regardless of the `--region` you pass, and logs a note when those don't match.
+
+The practical impact: SageMaker endpoints in non-us-east-1 regions pull the image cross-region. This adds a few minutes to the **first** image pull and to scale-out events when new instances come up. After the image is cached on the host (which happens on first pull), invocation latency is unaffected. For most deployments this is an inconvenience, not a problem.
+
+If cross-region pulls cause real issues (very frequent scale-out, tight initial-deploy SLAs), mirror the image to your region's private ECR with `mirror_image.sh`. See "TEI staleness" below for that workflow — same mechanism handles both staleness and cross-region cases.
 
 ### TEI vs the generic HF Inference Toolkit
 
@@ -113,7 +121,7 @@ PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
     tei-mirror)
 ```
 
-Then pass the resulting private URI directly to `deploy.py` via `--image-uri`. This bypasses the SDK helper entirely.
+Then pass the resulting private URI directly to `deploy.py` via `--image-uri`. This bypasses the resolver — `deploy.py` accepts any image URI you hand it.
 
 ## VPC / NAT gateway problem
 
