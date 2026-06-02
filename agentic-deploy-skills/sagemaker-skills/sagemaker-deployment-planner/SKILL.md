@@ -1,6 +1,6 @@
 ---
 name: sagemaker-deployment-planner
-description: 'Plan and coordinate the deployment of a model to Amazon SageMaker AI. Use this skill whenever the user wants to deploy, host, serve, or expose a model on SageMaker or AWS — including phrases like "deploy a model", "put this model on SageMaker", "host this LLM on AWS", "create an endpoint", "serve my fine-tuned model", or any request that involves taking a model artifact and making it available for inference on AWS. Use this even when the user is vague about how they want to deploy (e.g. "I just want to get this running on AWS, you figure it out"). This is the entry-point skill for SageMaker deployment work — it asks the right clarifying questions, picks a deployment pathway, and coordinates the other deployment skills.'
+description: 'Plan and coordinate the deployment of a model to Amazon SageMaker AI. Use this skill whenever the user wants to deploy, host, serve, or expose a model on SageMaker or AWS — including phrases like "deploy a model", "put this model on SageMaker", "host this LLM on AWS", "serve this embedding model", "deploy a reranker", "create an endpoint", "serve my fine-tuned model", or any request that involves taking a model artifact and making it available for inference on AWS. Use this even when the user is vague about how they want to deploy (e.g. "I just want to get this running on AWS, you figure it out"). Works for text-generation LLMs, embedding models, rerankers, classifiers, and other transformer models — the skill picks the right serving stack downstream. This is the entry-point skill for SageMaker deployment work — it asks the right clarifying questions, picks a deployment pathway, and coordinates the other deployment skills.'
 ---
 
 # SageMaker Deployment Planner
@@ -23,13 +23,14 @@ Phases 1–2 are this skill's job. The others activate when their patterns match
 You will eventually need to know:
 
 - **What model**: HuggingFace ID, S3 path to artifacts, or model name. If the user is vague ("the model I fine-tuned"), ask for the artifact location.
+- **Model type**: text-generation LLM, embedding/reranker, or other (classifier, NER, etc.). This determines the serving stack — usually inferable from the model name (anything ending in `-embed-*`, starting with `BAAI/bge-`, `sentence-transformers/*` etc. is embeddings; chat/instruct models are LLMs). Only ask if it's genuinely ambiguous.
 - **Traffic shape**: roughly how often will this be called?
 - **Latency tolerance**: interactive, near-real-time, or async?
 - **Cost sensitivity**: ask only if the user signals it or the traffic pattern is ambiguous.
 
 Region comes from `aws-context-discovery` — don't ask unless the user volunteers it.
 
-Do **not** front-load all of these. A common minimal set is just: *what model, and roughly how often will it be called?* That's often enough to narrow the pathway to two candidates. If the user already told you something, don't ask again.
+Do **not** front-load all of these. A common minimal set is just: *what model, and roughly how often will it be called?* The model name usually settles the model-type question. That alone is often enough to narrow the pathway to two candidates. If the user already told you something, don't ask again.
 
 ## Pathway selection
 
@@ -42,6 +43,8 @@ Do **not** front-load all of these. A common minimal set is just: *what model, a
 | **Bedrock Custom Model Import** | Wants Bedrock-compatible API, supported base family, weights only | Custom inference logic, unsupported architectures |
 
 For LLMs, **real-time endpoints are the default** unless traffic is explicitly spiky/sparse or inference is long-running. Serverless looks attractive for "low traffic" cases but most LLMs exceed its memory limits.
+
+For **embeddings**, real-time is again the default — but CPU instances are usually the right choice (much cheaper, fast enough for most embedding workloads). Don't reflexively recommend GPU instances for embedding models; ask `serving-image-selection` to consider CPU variants if the model is small (<1B params) and traffic is moderate.
 
 If two pathways are both reasonable, say so in one sentence each and pick one. Don't bury the recommendation in options.
 

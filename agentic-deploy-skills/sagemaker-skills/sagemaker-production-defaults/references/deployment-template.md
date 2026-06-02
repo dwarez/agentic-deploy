@@ -13,7 +13,9 @@ These defaults turn a working demo into something you can leave running. They fa
 | `ScaleInCooldown` | 300s | Long enough to avoid flapping. |
 | `ScaleOutCooldown` | 60s | Scale out faster than in — under spikes, you want capacity now. |
 
-For LLMs, the right target depends heavily on latency. A 100ms model handles 600/min easily; a 5s model maxes at ~12/min. 20 is a safe default.
+For LLMs, the right target depends heavily on latency. A 100ms model handles 600/min easily; a 5s model maxes at ~12/min. 20 is a safe default for typical LLM latencies.
+
+For embeddings (TEI), each request is much faster — typically <100ms on CPU and <20ms on GPU. The default of 20 will autoscale far too aggressively and waste money. Use `--target-invocations-per-instance 100–500` for embedding deployments. Rule of thumb: target ≈ 60 / (typical request latency in seconds).
 
 ## CloudWatch alarms — 3 by default
 

@@ -27,6 +27,8 @@ Defaults and reasoning in `references/deployment-template.md`.
 
 ## Running the deployment
 
+For a text-generation LLM (vLLM):
+
 ```bash
 python <skill-path>/scripts/deploy.py \
     --model-name qwen3-medical \
@@ -40,6 +42,20 @@ python <skill-path>/scripts/deploy.py \
     --env SM_VLLM_TRUST_REMOTE_CODE=true \
     --env SM_VLLM_MAX_MODEL_LEN=4096
 ```
+
+For an embedding model (TEI, often on CPU):
+
+```bash
+python <skill-path>/scripts/deploy.py \
+    --model-name bge-large-embeddings \
+    --image-uri "$IMAGE_URI" \
+    --role-arn "$ROLE_ARN" \
+    --instance-type ml.c6i.2xlarge \
+    --region "$REGION" \
+    --env HF_MODEL_ID=BAAI/bge-large-en-v1.5
+```
+
+Note: TEI deployments **do not** need `--inference-ami-version`. That flag is vLLM-specific. TEI env vars are also simpler (`HF_MODEL_ID` instead of `SM_VLLM_*`, no host or trust-remote-code to configure).
 
 Where each value comes from:
 
@@ -81,6 +97,12 @@ When `inference_ami_version` is `null` (older CUDA or non-vLLM), omit the flag.
 | InferenceAmiVersion | none (SageMaker default) | `--inference-ami-version` (REQUIRED for vLLM CUDA 13+) |
 
 Not defaulted (user-specific input needed): VPC config, KMS key, multi-variant, async inference.
+
+### Autoscaling target — tune by model type
+
+The default `--target-invocations-per-instance 20` is conservative and tuned for LLM workloads where each request takes 1–5 seconds. For embedding deployments (TEI), each request is much faster (typically <100ms on CPU, <20ms on GPU), so a single instance can handle far more throughput. **For embedding deployments, raise the target to 100–500** depending on instance and model size. The default of 20 will trigger autoscaling far too aggressively for embeddings and waste money.
+
+A rule of thumb: target value ≈ 60 / (typical request latency in seconds). LLM at 3s latency → target 20. Embedding at 100ms → target 600.
 
 ## Data capture + IAM gotcha
 

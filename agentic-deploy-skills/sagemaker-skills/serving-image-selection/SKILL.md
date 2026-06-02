@@ -1,6 +1,6 @@
 ---
 name: serving-image-selection
-description: 'Pick the right serving container for a SageMaker model deployment, resolve its current image URI, and handle the VPC mirroring gotcha when needed. Use this skill whenever about to deploy a model to a SageMaker endpoint and an image URI needs to be chosen — including when the user says "deploy this LLM", "host this HuggingFace model", "serve this fine-tuned model", or when about to call `image_uris.retrieve`, `get_huggingface_llm_image_uri`, or hardcode any container URI in deployment code. Never hardcode a container URI from memory and never default to TGI. This skill prevents the most common deployment-time failures: stale serving image, wrong region in URI, and silent ECR Public pull failures from VPC endpoints.'
+description: 'Pick the right serving container for a SageMaker model deployment, resolve its current image URI, and handle the VPC mirroring gotcha when needed. Use this skill whenever about to deploy a model to a SageMaker endpoint and an image URI needs to be chosen — including when the user says "deploy this LLM", "host this HuggingFace model", "serve this fine-tuned model", "deploy this embedding model", "host a reranker", "serve a sentence-transformers model", or when about to call `image_uris.retrieve`, `get_huggingface_llm_image_uri`, or hardcode any container URI. Picks between vLLM (LLMs), TEI (embeddings/rerankers), HF Inference Toolkit (other transformers), and DJL-LMI. Never hardcode a container URI from memory and never default to TGI. Prevents stale-image failures, wrong-region URIs, silent ECR Public pull failures from VPC endpoints, and using a generic container when a purpose-built one (vLLM, TEI) would be better.'
 ---
 
 # Serving Image Selection
@@ -18,7 +18,8 @@ For any HuggingFace text-generation LLM (Llama, Qwen, Mistral, Mixtral, DeepSeek
 | Model | Container |
 |---|---|
 | HuggingFace LLM (text generation) | vLLM DLC — `resolve_image_uri.py --family vllm` |
-| HuggingFace embeddings / classifiers | HF Inference Toolkit — `--family hf-inference` |
+| HuggingFace embeddings or rerankers | TEI DLC — `--family tei --instance-type <type>` |
+| HuggingFace classifiers, NER, QA, summarization, etc. | HF Inference Toolkit — `--family hf-inference` |
 | Amazon Nova | SageMaker JumpStart container |
 | Custom inference code | BYOC — user provides URI |
 | User specifically wants DJL | DJL-LMI — `--family djl-lmi` |
@@ -59,6 +60,60 @@ Recent vLLM DLCs (CUDA 13+, including the current default `0.21.0-...-cu130-...`
 The CUDA/driver mismatch breaks initialization before logging starts. This routinely gets misdiagnosed as quota, VPC, or account-level issues.
 
 **Rule of thumb**: any image tag containing `cu130` or later requires `InferenceAmiVersion`. Use `--format json` on the resolver to get the right value, then pass it to `deploy.py --inference-ami-version`.
+
+This is a vLLM-specific concern. TEI, DJL-LMI, and the generic HF Inference Toolkit do not need an AMI override at the moment — their SDK helpers handle compatible-AMI selection internally.
+
+## TEI for embedding and reranker models
+
+Embedding and reranker models use a different DLC: **Text Embeddings Inference (TEI)**. It is purpose-built for this workload — small image, fast cold starts, dynamic batching, no model graph compilation. Use it for any model from sentence-transformers, BAAI/bge-*, Snowflake/snowflake-arctic-embed-*, intfloat/e5-*, mixedbread-ai/mxbai-*, and the like.
+
+TEI has **two variants**: GPU (`huggingface-tei`) and CPU (`huggingface-tei-cpu`). The resolver picks based on instance type:
+
+```bash
+# CPU embeddings — cheap, often the right answer for small models
+python <skill-path>/scripts/resolve_image_uri.py --family tei \
+    --region eu-west-1 --instance-type ml.c6i.2xlarge
+
+# GPU embeddings — needed for large embedding models or high throughput
+python <skill-path>/scripts/resolve_image_uri.py --family tei \
+    --region eu-west-1 --instance-type ml.g5.xlarge
+```
+
+`--instance-type` is required for TEI. The CPU variant on a GPU instance wastes hardware; the GPU variant on a CPU instance fails to start.
+
+### TEI vs the generic HF Inference Toolkit
+
+Both can technically serve some embedding models. The distinction:
+
+- **TEI** is the dedicated embedding-serving stack. Faster, smaller image, supports dynamic batching, runs on CPU efficiently. Use this for any embedding or reranker model.
+- **HF Inference Toolkit** (`--family hf-inference`) is the generic transformers serving DLC. Use it for non-LLM, non-embedding tasks: sequence classification, NER, QA, summarization, image classification, etc. Larger image, slower cold start, but broader model support.
+
+If the user is deploying anything that produces vector embeddings or a reranker score, default to TEI. If they're deploying something else from the transformers ecosystem (e.g. a BERT-based classifier), use HF Inference Toolkit.
+
+### TEI environment variables
+
+| Env var | Purpose | Required |
+|---|---|---|
+| `HF_MODEL_ID` | HF model ID (e.g. `BAAI/bge-large-en-v1.5`) or `/opt/ml/model` if loading from S3 | Yes |
+| `HF_TOKEN` | HF auth token | Only for gated models |
+| `MAX_BATCH_TOKENS` | Max tokens per batch (default 16384, raise for higher throughput) | No |
+| `MAX_CLIENT_BATCH_SIZE` | Max requests per client batch (default 32) | No |
+
+TEI's env contract is simpler than vLLM's — no `_HOST` to set, no `TRUST_REMOTE_CODE` for the supported architectures. The architectures TEI supports (BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert) are baked into the image.
+
+### TEI staleness — when the AWS DLC lags upstream
+
+The AWS-published TEI DLC sometimes trails upstream by months. Currently supported model architectures lag the upstream TEI release. If a user is trying to deploy a very recent embedding model and the deployment fails with "unsupported architecture", check the upstream TEI changelog — if support was added recently, the AWS DLC may not have it yet.
+
+The workaround is to mirror the upstream image (`ghcr.io/huggingface/text-embeddings-inference:<version>`) into private ECR. `scripts/mirror_image.sh` handles this — point it at the GHCR URI instead of ECR Public:
+
+```bash
+PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
+    ghcr.io/huggingface/text-embeddings-inference:1.7.2 \
+    tei-mirror)
+```
+
+Then pass the resulting private URI directly to `deploy.py` via `--image-uri`. This bypasses the SDK helper entirely.
 
 ## VPC / NAT gateway problem
 
