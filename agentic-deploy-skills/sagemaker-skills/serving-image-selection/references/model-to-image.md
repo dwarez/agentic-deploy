@@ -70,31 +70,26 @@ Any vLLM CLI flag works: uppercase, replace dashes with underscores, prepend `SM
 
 ## TEI DLC
 
-Constructed directly by the resolver. Repo names differ by accelerator:
+Resolved via `sagemaker.core.image_uris.retrieve()` with framework key:
+- `huggingface-tei` → GPU variant (repo `tei`)
+- `huggingface-tei-cpu` → CPU variant (repo `tei-cpu`)
 
-- GPU variant: repo `tei`
-- CPU variant: repo `tei-cpu`
-
-URI pattern:
+URI pattern (account ID varies by region, the SDK looks it up for you):
 ```
-683313688378.dkr.ecr.us-east-1.amazonaws.com/<repo>:<tag>
+<account-id>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
 ```
 
-Example: `683313688378.dkr.ecr.us-east-1.amazonaws.com/tei-cpu:2.0.1-tei1.8.2-cpu-py310-ubuntu22.04`
+Examples (per-region account IDs):
+- `683313688378.dkr.ecr.us-east-1.amazonaws.com/tei-cpu:2.0.1-tei1.8.2-cpu-py310-ubuntu22.04`
+- `141502667606.dkr.ecr.eu-west-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04`
 
-Account ID `683313688378` is for HuggingFace-published DLCs — different from the AWS-generic DLC account (`763104351884`) used by vLLM and `huggingface-pytorch-inference`. This is because the HF team publishes TEI on their own pipeline.
+TEI is multi-region — the SDK has account IDs for every region it's published to. Don't hardcode an account ID; let `image_uris.retrieve` look it up.
 
 Instance type drives CPU vs GPU choice:
 - `ml.g*`, `ml.p*`, `ml.inf*` → GPU variant
 - `ml.c*`, `ml.m*`, `ml.t*` → CPU variant
 
 CPU embeddings are dramatically cheaper than GPU and often fast enough — `ml.c6i.2xlarge` (~$0.20/hr) is a common starting point. GPU is needed for large embedding models (>1B params) or sustained high throughput.
-
-### TEI is single-region (us-east-1 only)
-
-HuggingFace publishes the TEI DLC to `us-east-1` only. The resolver always returns the us-east-1 URI even when called with a different `--region`, and logs a note about the cross-region pull behavior.
-
-For endpoints in non-us-east-1 regions: the image is pulled cross-region on first use and on scale-out events. This adds a few minutes to those specific operations but does not affect ongoing invocation latency (the image is cached on the host). If this matters for your workload — frequent scale-out, tight cold-start SLAs — mirror to your region's ECR with `mirror_image.sh` (same workflow as the staleness workaround below).
 
 ### TEI environment variables
 
@@ -127,17 +122,15 @@ Then pass the resulting URI directly to `deploy.py --image-uri`. Upstream TEI im
 
 For HuggingFace models that are neither text generation nor embeddings — typical examples: BERT-based classifiers, NER models, QA models, summarizers, image classifiers, vision-text models.
 
-Constructed by the resolver with manual URI construction:
-
-```
-<dlc-account>.dkr.ecr.<region>.amazonaws.com/huggingface-pytorch-inference:<tag>
-```
-
-Account ID is from `DLC_ACCOUNTS` (shared with vLLM). Tag uses the `<pytorch>-transformers<X>-<gpu|cpu>-py<Y>-<...>` format. Example: `2.6.0-transformers4.51.3-gpu-py312-cu124-ubuntu22.04`.
+Resolved via `image_uris.retrieve(framework="huggingface", image_scope="inference", ...)`. The SDK requires both `version` (transformers) and `base_framework_version` (pytorch) — no working `latest` alias for this framework key. We pin to currently-supported values (`transformers4.51.3`, `pytorch2.6.0`); when the SDK errors with "Unsupported version", upgrade `sagemaker-core` and update the pins in the resolver.
 
 `--instance-type` is required so the resolver can pick CPU vs GPU. Larger image than TEI, slower cold start, but supports the full transformers/pipelines surface area. Use this only when TEI and vLLM don't fit.
 
-## Why no DJL-LMI
+## DJL-LMI
 
-The resolver has a `resolve_djl_lmi()` function, but it's stubbed — it raises `SystemExit` with instructions for the future maintainer. Reasoning: we recommend the AWS vLLM DLC for LLM serving (better logging, current vLLM features, actively maintained), so DJL-LMI isn't part of our defaults. If a specific deployment needs it, set `FALLBACK_DJL_LMI_TAG` and implement the function body following the same pattern as `resolve_hf_inference()`.
+DJL is AWS's deep learning serving framework. The LMI ("Large Model Inference") variant bundles vLLM, TensorRT-LLM, and Neuron engines into one container — you pick the engine via `OPTION_ROLLING_BATCH` env var.
+
+Resolved via `image_uris.retrieve(framework="djl-lmi", region=...)`. Example URI: `763104351884.dkr.ecr.eu-west-1.amazonaws.com/djl-inference:0.36.0-lmi22.0.0-cu129`.
+
+We don't recommend DJL-LMI as the default for LLM serving — the standalone vLLM DLC has better logging and is what we use by default. But the resolver supports DJL-LMI for cases where you specifically want it (e.g. TensorRT-LLM for higher throughput, or to match AWS official tutorials).
 

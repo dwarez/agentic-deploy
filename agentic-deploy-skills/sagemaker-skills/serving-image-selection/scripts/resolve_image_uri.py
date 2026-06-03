@@ -6,27 +6,44 @@ Usage:
     python resolve_image_uri.py --family vllm --region eu-west-1 --format json
     python resolve_image_uri.py --family tei --region eu-west-1 --instance-type ml.c6i.2xlarge
     python resolve_image_uri.py --family tei --region eu-west-1 --instance-type ml.g5.xlarge
+    python resolve_image_uri.py --family djl-lmi --region eu-west-1
     python resolve_image_uri.py --family hf-inference --region eu-west-1 --instance-type ml.g5.xlarge
 
 Families:
-    vllm        : AWS vLLM DLC — default for HuggingFace text-generation LLMs.
+    vllm        : AWS vLLM DLC ("vllm" repo). Default for HuggingFace text-generation LLMs.
                   Queries ECR Public for current tags; falls back to FALLBACK_VLLM_TAG.
+                  Constructed manually because the SageMaker SDK does not have a
+                  framework key for the standalone vLLM DLC — vLLM lives inside
+                  the DJL-LMI image in the SDK's worldview.
     vllm-public : Same image as vllm, from ECR Public Gallery (needs VPC egress).
-    tei         : HuggingFace Text Embeddings Inference — for embedding / reranker models.
-                  Single-region (us-east-1 only). Requires --instance-type for CPU/GPU split.
-    hf-inference: Generic HuggingFace transformers DLC — for classification, NER, QA,
-                  summarization, anything that isn't text generation or embeddings.
-                  Requires --instance-type for CPU/GPU.
-    djl-lmi     : STUB. Function exists but is intentionally not implemented — we don't
-                  use this path. See resolve_djl_lmi().
+    tei         : HuggingFace Text Embeddings Inference DLC, for embedding /
+                  reranker models. Resolved via sagemaker.core.image_uris.retrieve()
+                  with framework="huggingface-tei" (GPU) or "huggingface-tei-cpu"
+                  (CPU). Requires --instance-type to pick the variant.
+    djl-lmi     : DJL-LMI container — vLLM/TensorRT-LLM/Neuron engines inside.
+                  Resolved via image_uris.retrieve(framework="djl-lmi", ...).
+                  We don't recommend this for new LLM deploys (vLLM DLC is our
+                  default) but it's a working path.
+    hf-inference: Generic HuggingFace transformers DLC — for classification, NER,
+                  QA, summarization, anything that isn't text generation or
+                  embeddings. Resolved via image_uris.retrieve(framework="huggingface",
+                  image_scope="inference", ...). Requires --instance-type.
 
 Use --format json to get the URI plus required InferenceAmiVersion machine-readably.
 
-This script does NOT import the sagemaker Python SDK. The SDK v3 (Nov 2025) removed
-the URI helpers we used to rely on (image_uris.retrieve, get_huggingface_llm_image_uri).
-We construct URIs manually so the script works across all SDK versions and so we keep
-explicit control over which image family is selected — important when targeting
-HuggingFace-published DLCs rather than AWS-generic ones.
+Design notes
+------------
+This script uses sagemaker.core.image_uris.retrieve() (SDK v3) where available.
+That function is the public, stable URI resolver — same API as v2's
+sagemaker.image_uris.retrieve, just relocated to the sagemaker-core package. We
+do NOT use sagemaker.serve.ModelBuilder, which is opaque and conflicts with our
+explicit-stages design where serving-image-selection returns a URI for
+sagemaker-production-defaults to consume.
+
+For the vLLM DLC we construct the URI manually because the SDK has no framework
+key for the standalone "vllm" repo (the SDK considers vLLM an engine inside the
+DJL-LMI image). This is the same pattern we've always used for vLLM; nothing
+new there.
 """
 
 import argparse
@@ -38,18 +55,15 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Account ID maps and constants
+# Constants used for the manual vLLM path
 # ---------------------------------------------------------------------------
 
-# AWS DLC account IDs by region. Used by:
-#   - vLLM (repo: "vllm")
-#   - HF Inference Toolkit (repo: "huggingface-pytorch-inference")
-# These two image families share the AWS DLC account space.
+# AWS DLC account IDs by region for the standalone vLLM DLC.
+# Used ONLY by resolve_vllm() — the other families go through image_uris.retrieve
+# which has its own internal account-ID table.
 #
-# Most commercial regions share 763104351884. Some regions (esp. opt-in regions
-# like il-central-1, ap-southeast-3) use different account IDs — extend the map
-# as needed. GovCloud uses 442386744353 (intentionally not in this map; add
-# only if you actually deploy there, to avoid pretending we've tested it).
+# Most commercial regions share 763104351884. Some regions (notably eu-south-1)
+# use different account IDs.
 #
 # Source: https://github.com/aws/deep-learning-containers/blob/master/available_images.md
 DLC_ACCOUNTS = {
@@ -65,27 +79,20 @@ DLC_ACCOUNTS = {
     "sa-east-1": "763104351884",
 }
 
-# HuggingFace TEI is published by a different team / pipeline than the AWS-generic
-# DLCs above. Different account ID, and as of this writing it's only published to
-# us-east-1. Callers in other regions get the us-east-1 URI with a log note about
-# the cross-region pull cost (mainly affects first-pull and scale-out latency).
-HF_TEI_ACCOUNT_ID = "683313688378"
-HF_TEI_REGION = "us-east-1"
-HF_TEI_REPO_GPU = "tei"
-HF_TEI_REPO_CPU = "tei-cpu"
-
-# Fallback tags. These get updated periodically as new versions ship.
-# Update against: https://huggingface.co/docs/sagemaker/en/dlcs/available
+# Fallback tag for vLLM if the ECR Public query fails (no creds / no network).
+# Update periodically against https://gallery.ecr.aws/deep-learning-containers/vllm
 FALLBACK_VLLM_TAG = "0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.4"
-FALLBACK_TEI_GPU_TAG = "2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
-FALLBACK_TEI_CPU_TAG = "2.0.1-tei1.8.2-cpu-py310-ubuntu22.04"
-FALLBACK_HF_INFERENCE_GPU_TAG = "2.6.0-transformers4.51.3-gpu-py312-cu124-ubuntu22.04"
-FALLBACK_HF_INFERENCE_CPU_TAG = "2.6.0-transformers4.51.3-cpu-py312-ubuntu22.04"
 
-# CUDA major version → required InferenceAmiVersion. Without the right AMI,
-# vLLM DLC containers die on startup with no logs (driver mismatch breaks
-# initialization before logging is up). Only add entries when an override
-# is actually required for that CUDA version.
+# Version pins for the HuggingFace Inference Toolkit. The SDK requires both
+# parameters (no working `latest` alias for this framework key) so we pick
+# specific versions and update when the SDK errors with "Unsupported version".
+HF_INFERENCE_TRANSFORMERS_VERSION = "4.51.3"
+HF_INFERENCE_PYTORCH_VERSION = "pytorch2.6.0"
+
+# CUDA major version → required InferenceAmiVersion override. Currently only
+# matters for vLLM CUDA 13+ — without the override the container dies on
+# startup with no CloudWatch logs (driver mismatch breaks initialization
+# before logging is up). Add entries when other CUDA versions need this.
 CUDA_TO_AMI = {
     "13": "al2-ami-sagemaker-inference-gpu-3-1",
 }
@@ -94,8 +101,8 @@ ECR_PUBLIC_ACCOUNT_ID = "763104351884"
 ECR_PUBLIC_REPO = "vllm"
 
 # vLLM tags include "-sagemaker-vX.Y" to mark SageMaker-targeted releases (vs.
-# the upstream vLLM tags). Other image families use different naming conventions
-# so this regex is vLLM-specific.
+# upstream vLLM tags). vLLM-specific; other families have different conventions
+# but we don't need to filter them because the SDK does it for us.
 VLLM_SAGEMAKER_TAG_RE = re.compile(r"-sagemaker-v\d+\.\d+$")
 CUDA_VERSION_RE = re.compile(r"cu(\d+)")
 
@@ -140,7 +147,7 @@ def resolve_ami_for_tag(tag: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# vLLM tag lookup via ECR Public
+# vLLM resolution — manual, queries ECR Public
 # ---------------------------------------------------------------------------
 
 def query_ecr_public_tags() -> Optional[list[dict]]:
@@ -205,15 +212,11 @@ def pick_vllm_tag(prefer: str) -> str:
     return chosen["tag"]
 
 
-# ---------------------------------------------------------------------------
-# Family-specific resolvers
-# ---------------------------------------------------------------------------
-
 def resolve_vllm(region: str, tag: Optional[str] = None, prefer: str = "stable") -> str:
-    """AWS vLLM DLC. Regional URI works inside closed VPCs (built-in SageMaker routing)."""
+    """AWS vLLM DLC. Manual URI construction — SDK has no framework key for this repo."""
     if region not in DLC_ACCOUNTS:
         raise SystemExit(
-            f"Region '{region}' not in DLC account map. "
+            f"Region '{region}' not in DLC_ACCOUNTS. "
             f"Update DLC_ACCOUNTS — see https://github.com/aws/deep-learning-containers/blob/master/available_images.md"
         )
     account = DLC_ACCOUNTS[region]
@@ -229,16 +232,40 @@ def resolve_vllm_public(tag: Optional[str] = None, prefer: str = "stable") -> st
     return f"public.ecr.aws/deep-learning-containers/vllm:{tag}"
 
 
-def resolve_tei(region: str, instance_type: Optional[str], tag: Optional[str] = None) -> str:
+# ---------------------------------------------------------------------------
+# SDK-backed resolvers for TEI, DJL-LMI, HF Inference Toolkit
+# ---------------------------------------------------------------------------
+
+def _import_image_uris():
+    """Import image_uris.retrieve from sagemaker-core (v3) or sagemaker (v2).
+
+    v3 split the SDK into multiple packages. The URI resolver lives in
+    sagemaker-core at sagemaker.core.image_uris.retrieve, while v2 had it at
+    sagemaker.image_uris.retrieve. We try v3 first, fall back to v2 — both
+    paths return the same callable with the same signature.
+    """
+    try:
+        from sagemaker.core import image_uris  # type: ignore[import-untyped]
+        return image_uris.retrieve
+    except ImportError:
+        pass
+    try:
+        from sagemaker import image_uris  # type: ignore[import-untyped]
+        return image_uris.retrieve
+    except ImportError:
+        raise SystemExit(
+            "image_uris.retrieve not available. Install sagemaker-core (v3) "
+            "or sagemaker (v2): pip install sagemaker-core"
+        )
+
+
+def resolve_tei(region: str, instance_type: Optional[str], version: Optional[str] = None) -> str:
     """HuggingFace TEI DLC for embedding / reranker models.
 
-    Single-region: only published to us-east-1. Callers in other regions get the
-    us-east-1 URI with a note about cross-region pull behavior. The cross-region
-    cost only matters at first pull and scale-out events; cached after.
-
-    CPU vs GPU is chosen by instance_type:
-        ml.g* / ml.p* / ml.inf*  → tei (GPU)
-        everything else          → tei-cpu
+    Resolves via image_uris.retrieve() with framework="huggingface-tei" (GPU)
+    or "huggingface-tei-cpu" (CPU). The SDK knows the correct account ID per
+    region and the available tag for the requested version (or "latest" if
+    unspecified).
     """
     if instance_type is None:
         raise SystemExit(
@@ -246,67 +273,50 @@ def resolve_tei(region: str, instance_type: Optional[str], tag: Optional[str] = 
             "ml.g*/ml.p*/ml.inf* → GPU; everything else → CPU."
         )
 
-    gpu = is_gpu_instance(instance_type)
-    repo = HF_TEI_REPO_GPU if gpu else HF_TEI_REPO_CPU
-    fallback = FALLBACK_TEI_GPU_TAG if gpu else FALLBACK_TEI_CPU_TAG
+    retrieve = _import_image_uris()
+    framework = "huggingface-tei" if is_gpu_instance(instance_type) else "huggingface-tei-cpu"
+    log(f"TEI variant: framework={framework} (instance_type={instance_type!r})")
 
-    if tag is None:
-        tag = fallback
-        log(f"Using fallback TEI tag: {tag}")
+    kwargs = {"framework": framework, "region": region, "image_scope": "inference"}
+    if version:
+        kwargs["version"] = version
 
-    if region != HF_TEI_REGION:
-        log(
-            f"Note: TEI is only published to {HF_TEI_REGION}. "
-            f"Your endpoint in {region!r} will pull cross-region. "
-            f"First pull and scale-out events take a few extra minutes; "
-            f"cached after. If this is a problem, mirror to your region's "
-            f"ECR with mirror_image.sh."
-        )
-
-    uri = f"{HF_TEI_ACCOUNT_ID}.dkr.ecr.{HF_TEI_REGION}.amazonaws.com/{repo}:{tag}"
-    log(f"TEI variant: {repo} (instance_type={instance_type!r})")
-    return uri
+    return retrieve(**kwargs)
 
 
-def resolve_hf_inference(region: str, instance_type: Optional[str], tag: Optional[str] = None) -> str:
+def resolve_djl_lmi(region: str, version: Optional[str] = None) -> str:
+    """DJL-LMI container. Wraps vLLM, TensorRT-LLM, or Neuron engines internally."""
+    retrieve = _import_image_uris()
+    kwargs = {"framework": "djl-lmi", "region": region}
+    if version:
+        kwargs["version"] = version
+    return retrieve(**kwargs)
+
+
+def resolve_hf_inference(region: str, instance_type: Optional[str]) -> str:
     """HuggingFace Inference Toolkit — generic transformers serving DLC.
 
     For non-LLM, non-embedding tasks: sequence classification, NER, QA,
-    summarization, image classification, etc. Larger image than TEI, slower
-    cold start, but supports the full transformers/pipelines surface area.
+    summarization, image classification. The "huggingface" framework key
+    requires both `version` (transformers) and `base_framework_version`
+    (pytorch) — the SDK has no working `latest` alias for either, so we pin.
+
+    When deploys start failing with "Unsupported version" from the SDK,
+    upgrade sagemaker-core and update these two pins. The SDK error message
+    lists the currently-supported values.
     """
     if instance_type is None:
         raise SystemExit(
             "hf-inference requires --instance-type to pick CPU vs GPU variant."
         )
-    if region not in DLC_ACCOUNTS:
-        raise SystemExit(
-            f"Region '{region}' not in DLC account map. "
-            f"Update DLC_ACCOUNTS — see https://github.com/aws/deep-learning-containers/blob/master/available_images.md"
-        )
-
-    account = DLC_ACCOUNTS[region]
-    gpu = is_gpu_instance(instance_type)
-    if tag is None:
-        tag = FALLBACK_HF_INFERENCE_GPU_TAG if gpu else FALLBACK_HF_INFERENCE_CPU_TAG
-        log(f"Using fallback HF Inference Toolkit tag: {tag}")
-
-    return f"{account}.dkr.ecr.{region}.amazonaws.com/huggingface-pytorch-inference:{tag}"
-
-
-def resolve_djl_lmi(region: str, tag: Optional[str] = None) -> str:
-    """STUB — not implemented.
-
-    We don't actively use the DJL-LMI path. To enable it: research the current
-    DJL-LMI tag from https://github.com/aws/deep-learning-containers/blob/master/available_images.md,
-    set a FALLBACK_DJL_LMI_TAG constant above, and replace this body with a
-    URI constructor analogous to resolve_hf_inference().
-    """
-    raise SystemExit(
-        "djl-lmi resolution is not implemented in this project. "
-        "We default to the AWS vLLM DLC for LLM serving. "
-        "If you specifically need DJL-LMI, set FALLBACK_DJL_LMI_TAG and "
-        "implement resolve_djl_lmi() in scripts/resolve_image_uri.py."
+    retrieve = _import_image_uris()
+    return retrieve(
+        framework="huggingface",
+        region=region,
+        image_scope="inference",
+        version=HF_INFERENCE_TRANSFORMERS_VERSION,
+        base_framework_version=HF_INFERENCE_PYTORCH_VERSION,
+        instance_type=instance_type,
     )
 
 
@@ -315,13 +325,18 @@ def resolve_djl_lmi(region: str, tag: Optional[str] = None) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--family", required=True,
-        choices=["vllm", "vllm-public", "tei", "hf-inference", "djl-lmi"],
+        choices=["vllm", "vllm-public", "tei", "djl-lmi", "hf-inference"],
     )
     parser.add_argument("--region", required=True, help="Mandatory — never let this default")
-    parser.add_argument("--tag", default=None, help="Override the resolved tag")
+    parser.add_argument("--tag", default=None, help="Override the resolved tag (vLLM only)")
+    parser.add_argument(
+        "--version", default=None,
+        help="Framework version override for SDK-backed families (tei, djl-lmi). "
+             "Omit to use the SDK's 'latest' alias.",
+    )
     parser.add_argument(
         "--instance-type", default=None,
         help=(
@@ -344,15 +359,15 @@ def main() -> int:
     elif args.family == "vllm-public":
         uri = resolve_vllm_public(args.tag, args.prefer)
     elif args.family == "tei":
-        uri = resolve_tei(args.region, args.instance_type, args.tag)
-    elif args.family == "hf-inference":
-        uri = resolve_hf_inference(args.region, args.instance_type, args.tag)
+        uri = resolve_tei(args.region, args.instance_type, args.version)
     elif args.family == "djl-lmi":
-        uri = resolve_djl_lmi(args.region, args.tag)
+        uri = resolve_djl_lmi(args.region, args.version)
+    elif args.family == "hf-inference":
+        uri = resolve_hf_inference(args.region, args.instance_type)
     else:
         raise SystemExit(f"unknown family: {args.family}")
 
-    # InferenceAmiVersion is currently only relevant for vLLM (CUDA 13+).
+    # InferenceAmiVersion only matters for vLLM CUDA 13+ right now.
     # Other families bundle compatible CUDA/AMI selections in their image build.
     ami = None
     if args.family in ("vllm", "vllm-public"):

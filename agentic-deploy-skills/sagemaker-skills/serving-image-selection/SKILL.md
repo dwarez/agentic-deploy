@@ -22,7 +22,7 @@ For any HuggingFace text-generation LLM (Llama, Qwen, Mistral, Mixtral, DeepSeek
 | HuggingFace classifiers, NER, QA, summarization, etc. | HF Inference Toolkit — `--family hf-inference --instance-type <type>` |
 | Amazon Nova | SageMaker JumpStart container |
 | Custom inference code | BYOC — user provides URI |
-| User specifically wants DJL-LMI | Currently not supported — see resolver script for how to enable |
+| User specifically wants DJL-LMI | DJL-LMI — `--family djl-lmi` |
 
 Full table with reasoning in `references/model-to-image.md`.
 
@@ -46,7 +46,7 @@ The script queries ECR Public Gallery for current `*-sagemaker-v*` tags. `--pref
 
 If ECR query fails (no creds, no network), the script falls back to `FALLBACK_VLLM_TAG` (a known-good tag at script update time).
 
-**The resolver does not use the SageMaker Python SDK** for any family. The SDK v3 (Nov 2025) removed the URI helpers we used to rely on (`image_uris.retrieve`, `get_huggingface_llm_image_uri`), and even when those existed they couldn't target HuggingFace-published images — which is a load-bearing requirement for this project. We construct URIs manually: a regional account-ID map (`DLC_ACCOUNTS`, mostly `763104351884`, some regions differ), a separate account ID for HF-published images (`HF_TEI_ACCOUNT_ID = "683313688378"`), and family-specific fallback tags. See `python-env-setup` SKILL.md ("Why no `sagemaker` package") for the full rationale.
+**Resolution strategy is hybrid.** The resolver uses `sagemaker.core.image_uris.retrieve()` for TEI, DJL-LMI, and HF Inference Toolkit — the SDK has those framework keys with current per-region account IDs and tag tables, and reimplementing that data ourselves would be duplicate work. For vLLM specifically, the SDK has no framework key for the standalone `vllm` repo (the SDK considers vLLM an engine inside the DJL-LMI image), so vLLM stays manual: regional account-ID map (`DLC_ACCOUNTS`) plus ECR Public tag query with a fallback. We deliberately avoid `sagemaker.serve.ModelBuilder` because it collapses URI selection, model creation, and deployment into one opaque call — that conflicts with our explicit-stages design. See `python-env-setup` SKILL.md ("Why sagemaker-core only") for the full rationale.
 
 ## InferenceAmiVersion — required for current vLLM DLC
 
@@ -81,13 +81,7 @@ python <skill-path>/scripts/resolve_image_uri.py --family tei \
 
 `--instance-type` is required for TEI. The CPU variant on a GPU instance wastes hardware; the GPU variant on a CPU instance fails to start.
 
-### TEI is single-region — published only to us-east-1
-
-HuggingFace publishes the TEI DLC to `683313688378.dkr.ecr.us-east-1.amazonaws.com` only — no other regions. The resolver always returns the us-east-1 URI regardless of the `--region` you pass, and logs a note when those don't match.
-
-The practical impact: SageMaker endpoints in non-us-east-1 regions pull the image cross-region. This adds a few minutes to the **first** image pull and to scale-out events when new instances come up. After the image is cached on the host (which happens on first pull), invocation latency is unaffected. For most deployments this is an inconvenience, not a problem.
-
-If cross-region pulls cause real issues (very frequent scale-out, tight initial-deploy SLAs), mirror the image to your region's private ECR with `mirror_image.sh`. See "TEI staleness" below for that workflow — same mechanism handles both staleness and cross-region cases.
+The resolver returns a URI in the region you requested. The SDK has per-region account IDs for TEI (e.g. `141502667606` in eu-west-1, `683313688378` in us-east-1, etc.) — you don't need to know them, the SDK does.
 
 ### TEI vs the generic HF Inference Toolkit
 

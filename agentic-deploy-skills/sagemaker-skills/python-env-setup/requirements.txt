@@ -1,18 +1,25 @@
-# Core AWS dependencies for deployment work.
+# Core AWS dependencies for SageMaker deployment.
 #
-# No version pins. We want the latest — if scripts break against the latest,
-# fix the script, not the version. Newer boto3/awscli have better error
-# messages, more current API surface, and security fixes.
+# No version pins. We want the latest of each — if scripts break against the
+# latest, fix the script, not the version. Newer boto3/awscli/sagemaker-core
+# have current API surfaces, more accurate URI resolution tables, and security
+# fixes.
 #
-# Note: the SageMaker Python SDK is deliberately NOT listed. Our scripts use
-# boto3 directly and construct image URIs manually. See python-env-setup
-# SKILL.md ("Why no sagemaker package") and the PR that introduced this
-# decision for context.
+# Why sagemaker-core, not sagemaker:
+#   - sagemaker-core is the v3 layer containing image_uris.retrieve() and
+#     resource-shape definitions. We use it for image URI resolution (it
+#     keeps current account IDs and tags per framework family).
+#   - sagemaker (the meta-package) pulls in sagemaker-serve which contains
+#     ModelBuilder — an opinionated builder that conflicts with our
+#     explicit-stages design. We deliberately don't import from it.
+#   - sagemaker-train is unrelated (training, not inference) and we don't
+#     need it.
+# See python-env-setup SKILL.md ("Why sagemaker-core only") for context.
 #
-# Add per-deployment extras (e.g. huggingface_hub, transformers for local
-# validation) to this file or to a deployment-specific requirements file
-# alongside it. Do not pin versions here unless you have a documented
-# reason and a plan to unpin later.
+# Add per-deployment extras (huggingface_hub for model inspection, transformers
+# for tokenizer validation) to a deployment-specific requirements file alongside
+# this one. Do not pin versions here unless you have a documented reason.
 
 boto3
 awscli
+sagemaker-core
