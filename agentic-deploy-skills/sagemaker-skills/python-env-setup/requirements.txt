@@ -5,16 +5,26 @@
 # have current API surfaces, more accurate URI resolution tables, and security
 # fixes.
 #
-# Why sagemaker-core, not sagemaker:
-#   - sagemaker-core is the v3 layer containing image_uris.retrieve() and
-#     resource-shape definitions. We use it for image URI resolution (it
-#     keeps current account IDs and tags per framework family).
-#   - sagemaker (the meta-package) pulls in sagemaker-serve which contains
-#     ModelBuilder — an opinionated builder that conflicts with our
-#     explicit-stages design. We deliberately don't import from it.
-#   - sagemaker-train is unrelated (training, not inference) and we don't
-#     need it.
-# See python-env-setup SKILL.md ("Why sagemaker-core only") for context.
+# Why these three packages, and not the meta `sagemaker` package:
+#
+#   boto3, awscli       Used by deploy.py for endpoint creation/teardown and
+#                       by check_role.sh / check_versions.py for AWS calls.
+#                       Standard, stable.
+#
+#   sagemaker-core      Used by resolve_image_uri.py for ONE thing: resolving
+#                       the TEI image URI, which isn't on AWS's available-
+#                       images catalog page. All other image families are
+#                       read from the catalog page directly by the agent
+#                       (see serving-image-selection SKILL.md).
+#
+#                       sagemaker-core is the v3 SDK layer containing
+#                       image_uris.retrieve(). It does NOT pull in the
+#                       opinionated ModelBuilder (that lives in sagemaker-
+#                       serve, which we deliberately avoid).
+#
+# Why NOT the meta `sagemaker` package: it pulls in sagemaker-serve which
+# contains ModelBuilder, an opaque builder that conflicts with our explicit-
+# stages design. We deliberately keep our dependency surface minimal.
 #
 # Add per-deployment extras (huggingface_hub for model inspection, transformers
 # for tokenizer validation) to a deployment-specific requirements file alongside

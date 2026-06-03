@@ -15,16 +15,16 @@ Most SageMaker deployment failures that look like AWS problems are actually Pyth
 4. **Check installed versions correctly.** Use `importlib.metadata.version("package-name")`, never `module.__version__`. The latter is inconsistent across packages.
 5. **Use boto3 + sagemaker-core, not the full `sagemaker` meta-package.** See "Why sagemaker-core only" below.
 
-## Why `sagemaker-core` only
+## Why `sagemaker-core` only (and only for TEI)
 
-The SageMaker SDK v3 split into separate packages. We install one of them (`sagemaker-core`) and deliberately not the others.
+The SageMaker SDK v3 split into separate packages. We install `sagemaker-core` for a single specific reason: resolving the TEI image URI. Everything else either goes through boto3 directly or is read from AWS's [available-images catalog](https://aws.github.io/deep-learning-containers/reference/available_images/) by the agent.
 
-- **`sagemaker-core`** — `image_uris.retrieve()` plus resource-shape definitions. We use it for URI resolution because it maintains the per-region account-ID and per-version tag tables for `huggingface-tei`, `huggingface-tei-cpu`, `djl-lmi`, `huggingface`, and many others. Maintaining those tables ourselves would be error-prone and duplicate work AWS already does.
-- **`sagemaker-serve`** — contains `ModelBuilder`, an opinionated high-level builder that collapses model definition + endpoint config + deployment into one fluent call. This conflicts with our explicit-stages design where `serving-image-selection` returns a URI for `sagemaker-production-defaults` to consume. We don't import from this package.
+- **`sagemaker-core`** — has `image_uris.retrieve()` plus resource-shape definitions. We use *only* the URI resolver, and *only* for TEI (the catalog page doesn't list TEI). All other image families are read from the catalog page directly. If AWS adds TEI to the catalog, we can drop this dependency.
+- **`sagemaker-serve`** — contains `ModelBuilder`, an opinionated high-level builder that collapses model definition + endpoint config + deployment into one fluent call. This conflicts with our explicit-stages design. We don't import from this package.
 - **`sagemaker-train`** — training-side counterpart. We're inference-only, so we don't need it.
-- **`sagemaker`** (the meta-package) — pulls in all of the above plus older v2 shims. Too much surface area for what we need, and accidentally importing the wrong thing is easy. Avoid.
+- **`sagemaker`** (the meta-package) — pulls in all of the above plus older v2 shims. Too much surface area for what we need. Avoid.
 
-If a future contributor reaches for `from sagemaker.serve import ModelBuilder`, push back. The answer for image URIs is `from sagemaker.core import image_uris`; for deploy orchestration the answer is boto3 directly (which our `deploy.py` already uses).
+If a future contributor reaches for `from sagemaker.serve import ModelBuilder`, push back. For image URIs, the answer is either the AWS catalog page or `from sagemaker.core import image_uris` (for TEI only). For deploy orchestration, the answer is boto3 directly (which `deploy.py` already uses).
 
 ## How to set up
 
