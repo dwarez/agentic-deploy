@@ -1,6 +1,6 @@
 ---
 name: sagemaker-production-defaults
-description: 'Create a SageMaker real-time endpoint with autoscaling, CloudWatch alarms, and tagging enabled by default, plus optional data capture. Use this skill whenever about to create a SageMaker endpoint, write deployment code that calls `create_endpoint`, or finalize a deployment after the image URI and IAM role are known. This is the last step in the SageMaker deployment workflow. Never generate a bare `create_endpoint` call without these defaults — endpoints without autoscaling or alarms are demos, not deployments.'
+description: 'Create a SageMaker endpoint (real-time or async) with autoscaling, CloudWatch alarms, and tagging enabled by default. Use this skill whenever about to create a SageMaker endpoint, write deployment code that calls `create_endpoint`, or finalize a deployment after the image URI and IAM role are known. Provides deploy.py for real-time endpoints and deploy_async.py for async endpoints (with genuine scale-to-zero support). This is the last step in the SageMaker deployment workflow. Never generate a bare `create_endpoint` call without these defaults — endpoints without autoscaling or alarms are demos, not deployments.'
 ---
 
 # SageMaker Production Defaults
@@ -82,6 +82,70 @@ python deploy.py --image-uri "$IMAGE_URI" ${AMI:+--inference-ami-version "$AMI"}
 ```
 
 When `inference_ami_version` is `null` (older CUDA or non-vLLM), omit the flag.
+
+## Async inference deployments
+
+For long-running inferences (>60s), large payloads, or workloads that are bursty/sparse enough to benefit from scale-to-zero, use `deploy_async.py` instead of `deploy.py`. Async genuinely supports `MinCapacity=0` — real-time autoscaling can't.
+
+```bash
+python <skill-path>/scripts/deploy_async.py \
+    --model-name flux-text-to-image \
+    --image-uri "$IMAGE_URI" \
+    --role-arn "$ROLE_ARN" \
+    --instance-type ml.g5.2xlarge \
+    --region "$REGION" \
+    --output-s3-uri s3://my-bucket/async-output/ \
+    --env HF_MODEL_ID=black-forest-labs/FLUX.1-dev
+```
+
+Required extras over `deploy.py`:
+- `--output-s3-uri` — where async results land (results are not returned synchronously)
+
+Optional async-specific flags:
+- `--failure-s3-uri` — separate path for failed invocations
+- `--success-sns-topic`, `--error-sns-topic` — get notified when async results are ready or fail
+- `--min-capacity 0` (the default) — scale to zero between batches
+- `--backlog-per-instance-target N` — target queue depth per instance (default 5)
+- `--max-concurrent-invocations-per-instance N` — default 4
+
+### How scale-to-zero works
+
+The async script registers **two** autoscaling policies on the variant:
+
+1. **Target-tracking** on `ApproximateBacklogSizePerInstance` — handles ongoing scaling between min and max
+2. **Step-scaling** triggered by a `HasBacklogWithoutCapacity` CloudWatch alarm — handles `0→1` wake-from-zero
+
+Both are needed. Target-tracking alone cannot transition from zero (it can't divide by zero instances), so without the step policy the endpoint comes up, scales to zero after the first batch, and never wakes again. The script wires this up automatically.
+
+### Async alarms
+
+The script creates three CloudWatch alarms:
+- `ApproximateBacklogSize > 50` — queue is building faster than capacity can drain it
+- `InvocationsFailed > 5` — repeated processing failures
+- `HasBacklogWithoutCapacity` — drives the wake-from-zero policy (not a notification alarm; its action is the step-scaling policy, not the SNS topic)
+
+If you pass `--sns-alarm-topic <arn>`, the first two notify on that topic. The wake alarm always points at the step policy.
+
+### Invoking async endpoints
+
+Async endpoints aren't called synchronously. You upload the input to S3, call `invoke-endpoint-async` with the S3 input location, and SageMaker writes the result to your `--output-s3-uri` when done:
+
+```bash
+# Upload your input first
+aws s3 cp input.json s3://my-input-bucket/job1/input.json
+
+# Invoke
+aws sagemaker-runtime invoke-endpoint-async \
+    --endpoint-name <endpoint-name> \
+    --input-location s3://my-input-bucket/job1/input.json \
+    --content-type application/json \
+    --region <region>
+
+# Poll for the result at your output URI
+aws s3 cp s3://my-bucket/async-output/<inference-id>.out result.json
+```
+
+Teardown works the same as real-time: `bash teardown.sh <endpoint-name>` (the teardown script discovers policies and alarms by name prefix, so it handles both deployment modes).
 
 ## Defaults at a glance
 

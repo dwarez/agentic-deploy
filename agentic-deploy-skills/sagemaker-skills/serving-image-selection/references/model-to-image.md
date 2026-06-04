@@ -2,115 +2,67 @@
 
 Consult this **before** writing deployment code that hardcodes an image URI.
 
+The canonical source for AWS Deep Learning Container image URIs is:
+**https://aws.github.io/deep-learning-containers/reference/available_images/**
+
+This page is AWS-maintained and lists every published image family with example URIs, tags, CUDA versions, and platform (SageMaker vs EC2/ECS/EKS). Read URIs from there directly — substitute `<region>` with the user's region and pass to `deploy.py --image-uri`. The doc below explains *which* family to pick for which use case; the URI itself comes from the AWS page.
+
+The one exception is TEI, which isn't on the AWS page but is available via the SDK. See "TEI" below.
+
 ## Decision summary
 
-| Model family | Container | Notes |
+| Model family | Container | Source |
 |---|---|---|
-| HuggingFace text-generation LLMs (Llama, Qwen, Mistral, Mixtral, DeepSeek, Phi, Gemma, GPT-OSS, etc.) | **AWS vLLM DLC** | Default for LLMs. Actively maintained, supports newest architectures within days. |
-| Same as above, alternative | DJL-LMI | SDK-friendly via `image_uris.retrieve(framework="djl-lmi", ...)`. Worse logging than direct vLLM. |
-| HuggingFace embeddings + rerankers (BAAI/bge-*, Snowflake/snowflake-arctic-embed-*, sentence-transformers/*, intfloat/e5-*, mixedbread-ai/mxbai-*, etc.) | **AWS TEI DLC** (Text Embeddings Inference) | Default for embeddings. Two variants: GPU (`huggingface-tei`) and CPU (`huggingface-tei-cpu`). |
-| Other HuggingFace transformers (classification, NER, QA, summarization, image classification, etc.) | SageMaker HuggingFace Inference Toolkit | Generic transformers DLC. For anything that isn't text generation or embeddings. |
-| Amazon Nova (Lite, Micro, Pro) | SageMaker JumpStart container | Use JumpStart deployment, not raw endpoint creation. |
-| Stable Diffusion / image generation | DJL or custom | Multimodal needs vary too much for a single default. |
-| Custom inference code | BYOC | User provides URI. |
+| HuggingFace text-generation LLMs (Llama, Qwen, Mistral, Mixtral, DeepSeek, Phi, Gemma, GPT-OSS, etc.) | **AWS vLLM DLC** | AWS catalog → "vLLM (Ubuntu)" |
+| Same as above, multimodal (vision-language) | vLLM-Omni | AWS catalog → "vLLM-Omni" |
+| HuggingFace-curated vLLM build (transformers pre-installed) | HuggingFace vLLM | AWS catalog → "HuggingFace vLLM Inference" |
+| Same family, alternative serving stack | DJL-LMI | AWS catalog → "DJL Inference" |
+| HuggingFace embeddings + rerankers | **TEI DLC** | `resolve_image_uri.py --family tei` |
+| HuggingFace classifiers, NER, QA, summarization | HF Inference Toolkit | AWS catalog → "HuggingFace PyTorch Inference" |
+| HuggingFace-curated SGLang build | HuggingFace SGLang | AWS catalog → "HuggingFace SGLang Inference" |
+| SGLang (without HF wrapper) | SGLang | AWS catalog → "SGLang" |
+| Amazon Nova (Lite, Micro, Pro) | SageMaker JumpStart | Use JumpStart deployment, not raw endpoint creation |
+| Stable Diffusion / image generation | StabilityAI or DJL | AWS catalog → "StabilityAI PyTorch Inference" or "DJL Inference" |
+| Inferentia / Trainium hardware | NeuronX variants | AWS catalog → search for "NeuronX" |
+| Custom inference code | BYOC | User provides URI |
 
-## Why not TGI
+## Why vLLM, not TGI
 
-Text Generation Inference was the long-standing default. As of late 2025 / early 2026, **TGI is archived** — no more major updates. Models released after the archive (Qwen3 most famously) fail health checks on TGI. The SageMaker SDK helper `get_huggingface_llm_image_uri("huggingface", ...)` returns the TGI image; don't use that backend for new deployments. (Note: the same helper with `"huggingface-tei"` or `"huggingface-tei-cpu"` returns the TEI image and is the right call for embeddings.)
+Text Generation Inference (TGI) was the long-standing default for HuggingFace LLMs. As of late 2025 / early 2026, **TGI is archived** — no more major updates. Models released after the archive (Qwen3 most famously) fail health checks on TGI. Use vLLM instead.
 
-## vLLM DLC URI
+The SageMaker SDK v2 helper `get_huggingface_llm_image_uri` returned TGI URIs; the v3 SDK removed it entirely. Either way, don't use TGI for new deployments.
 
-Two sources, same image:
+## vLLM DLC
 
-### Regional ECR (preferred when possible)
-
-The bundled `scripts/resolve_image_uri.py` queries ECR Public for current tags and constructs the regional URI. Use that rather than hand-constructing.
-
-For manual inspection of available tags: https://gallery.ecr.aws/deep-learning-containers/vllm
-
-URI pattern:
+URI pattern (from AWS catalog):
 ```
-<dlc-account>.dkr.ecr.<region>.amazonaws.com/vllm:<vllm>-gpu-py<py>-cu<cuda>-<os>-sagemaker-v<integration>
-```
-
-Example: `763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.4`
-
-The account `763104351884` is the AWS public DLC account for most regions. Some regions differ (e.g. `eu-south-1` uses `692866216735`). The script's `DLC_ACCOUNTS` map handles this — update against AWS docs if you hit `ImagePullError`.
-
-### ECR Public Gallery
-
-Same image, public:
-```
-public.ecr.aws/deep-learning-containers/vllm:<tag>
+763104351884.dkr.ecr.<region>.amazonaws.com/vllm:<version>-gpu-py<py>-cu<cuda>-ubuntu22.04-sagemaker
 ```
 
-Simpler **for endpoints not in a VPC** (or VPC with NAT gateway). For closed VPCs, the regional URI works (built-in routing); for cases requiring the public URI, mirror to private ECR with `scripts/mirror_image.sh`.
+Example: `763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker`
 
-## vLLM DLC environment variables
+**vLLM AMI requirement**: images with `cu130` or higher require setting `InferenceAmiVersion=al2-ami-sagemaker-inference-gpu-3-1` on the ProductionVariant. Without it the container dies on startup with no CloudWatch logs created. Use `resolve_image_uri.py --ami-for-tag <tag>` to determine the right AMI for a given tag.
 
-### Required for every HuggingFace LLM deployment
+For environment variable configuration of the vLLM DLC, see the SKILL.md.
 
-| Env var | Purpose | Notes |
-|---|---|---|
-| `SM_VLLM_MODEL` | HF model ID or `/opt/ml/model` for S3 | — |
-| `SM_VLLM_HOST` | **Must be `0.0.0.0`** | Otherwise vLLM binds localhost, ping fails, container dies before logs. |
-| `SM_VLLM_TRUST_REMOTE_CODE` | `true` for custom architectures (Qwen, several recent) | Safe to set unconditionally. |
-| `HUGGING_FACE_HUB_TOKEN` | HF auth token | Required for gated models. |
+## TEI DLC (not on the AWS catalog)
 
-### Tuning
+TEI isn't listed on AWS's available-images page, but it's published and accessible via the SageMaker SDK's `image_uris.retrieve()`. The bundled `resolve_image_uri.py --family tei` calls the SDK to get the right URI.
 
-| Env var | Purpose |
-|---|---|
-| `SM_VLLM_MAX_MODEL_LEN` | Max sequence length |
-| `SM_VLLM_GPU_MEMORY_UTILIZATION` | 0.0–1.0, ~0.9 default |
-| `SM_VLLM_TENSOR_PARALLEL_SIZE` | GPU count for multi-GPU |
-| `SM_VLLM_DTYPE` | `auto`, `float16`, `bfloat16` |
-
-Any vLLM CLI flag works: uppercase, replace dashes with underscores, prepend `SM_VLLM_`.
-
-## TEI DLC
-
-Resolved through the same `get_huggingface_llm_image_uri` helper with a different `backend` argument:
-
-- `backend="huggingface-tei"` → GPU variant
-- `backend="huggingface-tei-cpu"` → CPU variant
-
-Instance type drives the choice:
-- `ml.g*`, `ml.p*`, `ml.inf*` → GPU variant
-- `ml.c*`, `ml.m*`, `ml.t*` → CPU variant
+Two variants by instance type:
+- `ml.g*`, `ml.p*`, `ml.inf*` → GPU variant (`tei` repo)
+- `ml.c*`, `ml.m*`, `ml.t*` → CPU variant (`tei-cpu` repo)
 
 CPU embeddings are dramatically cheaper than GPU and often fast enough — `ml.c6i.2xlarge` (~$0.20/hr) is a common starting point. GPU is needed for large embedding models (>1B params) or sustained high throughput.
 
-### TEI environment variables
+Multi-region: the SDK has per-region account IDs (e.g. `141502667606` in eu-west-1, `683313688378` in us-east-1).
 
-| Env var | Purpose | Required |
-|---|---|---|
-| `HF_MODEL_ID` | HF model ID (e.g. `BAAI/bge-large-en-v1.5`) or `/opt/ml/model` if loading from S3 | Yes |
-| `HF_TOKEN` | HF auth token | Only for gated models |
-| `MAX_BATCH_TOKENS` | Max tokens per batch (default 16384) | No |
-| `MAX_CLIENT_BATCH_SIZE` | Max requests per client batch (default 32) | No |
+TEI supports BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert. The AWS-published DLC sometimes lags upstream by months — if a recent architecture isn't supported, mirror the upstream image from `ghcr.io/huggingface/text-embeddings-inference:<version>` using `scripts/mirror_image.sh` and pass the result to `deploy.py --image-uri` directly.
 
-TEI's env contract is much simpler than vLLM's — no host-binding to configure, no trust-remote-code flag for supported architectures.
+For environment variable configuration of TEI, see the SKILL.md.
 
-### TEI supported architectures
+## When AWS adds TEI to the catalog
 
-TEI bakes architecture support into the image. The current upstream version supports BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert. The AWS-published DLC sometimes lags upstream by months — if a recent architecture isn't supported, the deployment fails with an "unsupported architecture" error during model load.
+If/when AWS adds TEI to https://aws.github.io/deep-learning-containers/reference/available_images/, the `--family tei` path in the resolver can be deleted — the agent would read TEI URIs from the catalog like everything else. The resolver script would shrink to just the `--ami-for-tag` helper.
 
-### Workaround for stale AWS DLC
-
-If the upstream TEI version supports a model architecture but the AWS DLC doesn't yet, mirror the upstream image from GHCR:
-
-```bash
-PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
-    ghcr.io/huggingface/text-embeddings-inference:1.7.2 \
-    tei-mirror)
-```
-
-Then pass the resulting URI directly to `deploy.py --image-uri`, bypassing the SDK helper. Upstream TEI images are CPU/GPU-flavored too — pick the right tag (the GHCR registry has `:cpu-<version>` tags for CPU builds).
-
-## HuggingFace Inference Toolkit (the generic one)
-
-For HuggingFace models that are neither text generation nor embeddings — typical examples: BERT-based classifiers, NER models, QA models, summarizers, image classifiers, vision-text models.
-
-Resolved through `image_uris.retrieve(framework="huggingface", ...)`. Larger image than TEI, slower cold start, but supports the full transformers/pipelines surface area. Use this only when TEI and vLLM don't fit.
-
+A request to add TEI to the catalog has been (or should be) filed with AWS. Track that and simplify when it lands.

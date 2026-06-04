@@ -1,14 +1,35 @@
-# Core AWS / SageMaker dependencies for deployment work.
+# Core AWS dependencies for SageMaker deployment.
 #
-# No version pins. We want the latest of each — if scripts break against
-# the latest, fix the script, not the version. Newer SDKs have better
-# error messages, more current model support, and security fixes.
+# No version pins. We want the latest of each — if scripts break against the
+# latest, fix the script, not the version. Newer boto3/awscli/sagemaker-core
+# have current API surfaces, more accurate URI resolution tables, and security
+# fixes.
 #
-# Add per-deployment extras (e.g. huggingface_hub, transformers for local
-# validation) to this file or to a deployment-specific requirements file
-# alongside it. Do not pin versions here unless you have a documented
-# reason and a plan to unpin later.
+# Why these three packages, and not the meta `sagemaker` package:
+#
+#   boto3, awscli       Used by deploy.py for endpoint creation/teardown and
+#                       by check_role.sh / check_versions.py for AWS calls.
+#                       Standard, stable.
+#
+#   sagemaker-core      Used by resolve_image_uri.py for ONE thing: resolving
+#                       the TEI image URI, which isn't on AWS's available-
+#                       images catalog page. All other image families are
+#                       read from the catalog page directly by the agent
+#                       (see serving-image-selection SKILL.md).
+#
+#                       sagemaker-core is the v3 SDK layer containing
+#                       image_uris.retrieve(). It does NOT pull in the
+#                       opinionated ModelBuilder (that lives in sagemaker-
+#                       serve, which we deliberately avoid).
+#
+# Why NOT the meta `sagemaker` package: it pulls in sagemaker-serve which
+# contains ModelBuilder, an opaque builder that conflicts with our explicit-
+# stages design. We deliberately keep our dependency surface minimal.
+#
+# Add per-deployment extras (huggingface_hub for model inspection, transformers
+# for tokenizer validation) to a deployment-specific requirements file alongside
+# this one. Do not pin versions here unless you have a documented reason.
 
-sagemaker
 boto3
 awscli
+sagemaker-core

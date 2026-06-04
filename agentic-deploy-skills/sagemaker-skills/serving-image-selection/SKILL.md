@@ -1,73 +1,55 @@
 ---
 name: serving-image-selection
-description: 'Pick the right serving container for a SageMaker model deployment, resolve its current image URI, and handle the VPC mirroring gotcha when needed. Use this skill whenever about to deploy a model to a SageMaker endpoint and an image URI needs to be chosen — including when the user says "deploy this LLM", "host this HuggingFace model", "serve this fine-tuned model", "deploy this embedding model", "host a reranker", "serve a sentence-transformers model", or when about to call `image_uris.retrieve`, `get_huggingface_llm_image_uri`, or hardcode any container URI. Picks between vLLM (LLMs), TEI (embeddings/rerankers), HF Inference Toolkit (other transformers), and DJL-LMI. Never hardcode a container URI from memory and never default to TGI. Prevents stale-image failures, wrong-region URIs, silent ECR Public pull failures from VPC endpoints, and using a generic container when a purpose-built one (vLLM, TEI) would be better.'
+description: 'Pick the right serving container for a SageMaker model deployment and find its current image URI. Use this skill whenever about to deploy a model to a SageMaker endpoint and an image URI needs to be chosen — including when the user says "deploy this LLM", "host this HuggingFace model", "serve this fine-tuned model", "deploy this embedding model", "host a reranker", "serve a sentence-transformers model", or when about to hardcode any container URI in deployment code. Picks between vLLM (LLMs), TEI (embeddings/rerankers), HF Inference Toolkit (other transformers), DJL-LMI, SGLang, and other AWS Deep Learning Container families. Never hardcode a container URI from memory and never default to TGI. Prevents stale-image failures, wrong-region URIs, and using a generic container when a purpose-built one (vLLM, TEI) would be better.'
 ---
 
 # Serving Image Selection
 
-The serving container is the single thing most likely to break a SageMaker deployment that "looked correct on paper". Wrong container, stale tag, or an image SageMaker can't pull from where the endpoint lives — all produce the same opaque `Failed to pass health check` error.
+The serving container is the single thing most likely to break a SageMaker deployment that "looked correct on paper". Wrong container, stale tag, or the wrong AMI — all produce the same opaque `Failed to pass health check` error.
 
-## Default: vLLM DLC
+## Where image URIs come from
 
-For any HuggingFace text-generation LLM (Llama, Qwen, Mistral, Mixtral, DeepSeek, Phi, Gemma, GPT-OSS, etc.), use the **AWS vLLM Deep Learning Container**.
+**Primary source: AWS's official Deep Learning Containers catalog.**
 
-**Do not use TGI.** Text Generation Inference is archived as of late 2025. The SageMaker SDK helper `get_huggingface_llm_image_uri` points to TGI; redirect to vLLM. Models released after the archive (Qwen3 most famously) fail ping health checks on TGI.
+URL: https://aws.github.io/deep-learning-containers/reference/available_images/
+
+This page is AWS-maintained and lists every image family with example URIs, tags, CUDA versions, Python versions, and platform (SageMaker vs EC2/ECS/EKS). When picking a URI for a deployment, **read it from this page directly** — copy the example URL, substitute `<region>` with the user's region, and pass it to `deploy.py --image-uri`.
+
+The example URLs use `763104351884` as the account ID for most regions. A few regions use different accounts (e.g. `eu-south-1` uses `692866216735`). Check the [Region Availability page](https://aws.github.io/deep-learning-containers/reference/region_availability/) when in doubt.
+
+**Exception: TEI is not on the AWS catalog page.** It's published separately, accessible only via the SDK. For TEI specifically, use the bundled `resolve_image_uri.py --family tei` (see below).
 
 ## Quick decision
 
-| Model | Container |
-|---|---|
-| HuggingFace LLM (text generation) | vLLM DLC — `resolve_image_uri.py --family vllm` |
-| HuggingFace embeddings or rerankers | TEI DLC — `--family tei --instance-type <type>` |
-| HuggingFace classifiers, NER, QA, summarization, etc. | HF Inference Toolkit — `--family hf-inference` |
-| Amazon Nova | SageMaker JumpStart container |
-| Custom inference code | BYOC — user provides URI |
-| User specifically wants DJL | DJL-LMI — `--family djl-lmi` |
+| Model | Container family | How to get the URI |
+|---|---|---|
+| HuggingFace text-generation LLM (Llama, Qwen, Mistral, etc.) | vLLM (SageMaker) | AWS catalog → "vLLM (Ubuntu)" section |
+| Same as above, multimodal | vLLM-Omni | AWS catalog → "vLLM-Omni" section |
+| HuggingFace embeddings or rerankers | TEI | `resolve_image_uri.py --family tei` (not on AWS catalog) |
+| HuggingFace classifiers, NER, QA, summarization | HF Inference Toolkit | AWS catalog → "HuggingFace PyTorch Inference" |
+| HuggingFace-curated vLLM build | HuggingFace vLLM | AWS catalog → "HuggingFace vLLM Inference" |
+| HuggingFace-curated SGLang build | HuggingFace SGLang | AWS catalog → "HuggingFace SGLang Inference" |
+| User specifically wants DJL-LMI | DJL Inference | AWS catalog → "DJL Inference" |
+| User specifically wants SGLang | SGLang | AWS catalog → "SGLang" |
+| Amazon Nova | SageMaker JumpStart | Use JumpStart, not raw endpoint creation |
+| Custom inference code | BYOC | User provides URI |
 
-Full table with reasoning in `references/model-to-image.md`.
+**Do not use TGI.** Text Generation Inference is archived. Models released after the archive (Qwen3 most famously) fail ping health checks on TGI. Use vLLM instead.
 
-## Resolving image URIs
+Full reasoning for each family in `references/model-to-image.md`.
 
-Always use the bundled script — don't hardcode URIs from memory:
+## Workflow
 
-```bash
-# Default: query ECR for current tags, pick second-newest stable tag
-python <skill-path>/scripts/resolve_image_uri.py --family vllm --region eu-west-1
+For every family except TEI: **read the URI from the AWS catalog page**.
 
-# Get URI + required AMI as JSON (for chaining into deploy.py)
-python <skill-path>/scripts/resolve_image_uri.py --family vllm --region eu-west-1 --format json
-# {"image_uri": "...", "inference_ami_version": "al2-ami-sagemaker-inference-gpu-3-1"}
+1. Open https://aws.github.io/deep-learning-containers/reference/available_images/
+2. Find the section for the right family (e.g. "vLLM (Ubuntu)" for HuggingFace LLMs)
+3. Pick the newest row marked `SageMaker` for the platform column
+4. Substitute `<region>` with the user's region (from `aws-context-discovery`)
+5. For vLLM: also check the AMI requirement (see "vLLM AMI requirement" below)
+6. Pass the URI to `deploy.py --image-uri`
 
-# Override the tag explicitly
-python <skill-path>/scripts/resolve_image_uri.py --family vllm --region eu-west-1 --tag <specific-tag>
-```
-
-The script queries ECR Public Gallery for current `*-sagemaker-v*` tags. `--prefer stable` (default) picks the second-newest tag, avoiding fresh-push regressions we've observed in practice. `--prefer latest` picks the absolute newest if you want bleeding edge.
-
-If ECR query fails (no creds, no network), the script falls back to `FALLBACK_VLLM_TAG` (a known-good tag at script update time).
-
-**There's no SDK helper for the vLLM DLC.** AWS publishes the DLC but `sagemaker.image_uris.retrieve` doesn't cover it. The script hardcodes the regional account-ID map (mostly `763104351884`, some regions differ) and constructs the URI directly. For DJL-LMI and HF Inference, the script wraps the SDK helper with a mandatory `region=` argument — never call `image_uris.retrieve` without `region` or it silently picks the session region.
-
-## InferenceAmiVersion — required for current vLLM DLC
-
-Recent vLLM DLCs (CUDA 13+, including the current default `0.21.0-...-cu130-...`) **require** setting `InferenceAmiVersion` on the ProductionVariant. Without it, SageMaker may land the container on an older AMI with incompatible CUDA drivers and it dies on startup.
-
-**Failure signature:**
-- `CannotStartContainerError` after ~10–15 minutes
-- **No CloudWatch log group ever created**
-- Identical across image versions, instance families, IAM roles, env vars
-
-The CUDA/driver mismatch breaks initialization before logging starts. This routinely gets misdiagnosed as quota, VPC, or account-level issues.
-
-**Rule of thumb**: any image tag containing `cu130` or later requires `InferenceAmiVersion`. Use `--format json` on the resolver to get the right value, then pass it to `deploy.py --inference-ami-version`.
-
-This is a vLLM-specific concern. TEI, DJL-LMI, and the generic HF Inference Toolkit do not need an AMI override at the moment — their SDK helpers handle compatible-AMI selection internally.
-
-## TEI for embedding and reranker models
-
-Embedding and reranker models use a different DLC: **Text Embeddings Inference (TEI)**. It is purpose-built for this workload — small image, fast cold starts, dynamic batching, no model graph compilation. Use it for any model from sentence-transformers, BAAI/bge-*, Snowflake/snowflake-arctic-embed-*, intfloat/e5-*, mixedbread-ai/mxbai-*, and the like.
-
-TEI has **two variants**: GPU (`huggingface-tei`) and CPU (`huggingface-tei-cpu`). The resolver picks based on instance type:
+For TEI: **use the bundled resolver**.
 
 ```bash
 # CPU embeddings — cheap, often the right answer for small models
@@ -79,59 +61,25 @@ python <skill-path>/scripts/resolve_image_uri.py --family tei \
     --region eu-west-1 --instance-type ml.g5.xlarge
 ```
 
-`--instance-type` is required for TEI. The CPU variant on a GPU instance wastes hardware; the GPU variant on a CPU instance fails to start.
+`--instance-type` is required for TEI. The resolver picks `tei` (GPU) for `ml.g*/ml.p*/ml.inf*` instances and `tei-cpu` (CPU) for everything else, then calls the SDK to get the right per-region URI.
 
-### TEI vs the generic HF Inference Toolkit
+## vLLM AMI requirement
 
-Both can technically serve some embedding models. The distinction:
+vLLM DLC images with **CUDA 13 or higher** (current default: `cu130`) require setting `InferenceAmiVersion=al2-ami-sagemaker-inference-gpu-3-1` on the ProductionVariant. Without it the container dies on startup with no CloudWatch logs ever created. The failure looks identical to many other things (account-level issues, quota, networking) and routinely sends people down wrong diagnostic paths.
 
-- **TEI** is the dedicated embedding-serving stack. Faster, smaller image, supports dynamic batching, runs on CPU efficiently. Use this for any embedding or reranker model.
-- **HF Inference Toolkit** (`--family hf-inference`) is the generic transformers serving DLC. Use it for non-LLM, non-embedding tasks: sequence classification, NER, QA, summarization, image classification, etc. Larger image, slower cold start, but broader model support.
+Rule of thumb: if the tag you picked contains `cu130` or later, pass `--inference-ami-version al2-ami-sagemaker-inference-gpu-3-1` to `deploy.py`.
 
-If the user is deploying anything that produces vector embeddings or a reranker score, default to TEI. If they're deploying something else from the transformers ecosystem (e.g. a BERT-based classifier), use HF Inference Toolkit.
-
-### TEI environment variables
-
-| Env var | Purpose | Required |
-|---|---|---|
-| `HF_MODEL_ID` | HF model ID (e.g. `BAAI/bge-large-en-v1.5`) or `/opt/ml/model` if loading from S3 | Yes |
-| `HF_TOKEN` | HF auth token | Only for gated models |
-| `MAX_BATCH_TOKENS` | Max tokens per batch (default 16384, raise for higher throughput) | No |
-| `MAX_CLIENT_BATCH_SIZE` | Max requests per client batch (default 32) | No |
-
-TEI's env contract is simpler than vLLM's — no `_HOST` to set, no `TRUST_REMOTE_CODE` for the supported architectures. The architectures TEI supports (BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert) are baked into the image.
-
-### TEI staleness — when the AWS DLC lags upstream
-
-The AWS-published TEI DLC sometimes trails upstream by months. Currently supported model architectures lag the upstream TEI release. If a user is trying to deploy a very recent embedding model and the deployment fails with "unsupported architecture", check the upstream TEI changelog — if support was added recently, the AWS DLC may not have it yet.
-
-The workaround is to mirror the upstream image (`ghcr.io/huggingface/text-embeddings-inference:<version>`) into private ECR. `scripts/mirror_image.sh` handles this — point it at the GHCR URI instead of ECR Public:
+The bundled `resolve_image_uri.py` has a helper that returns the right AMI for a given tag:
 
 ```bash
-PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
-    ghcr.io/huggingface/text-embeddings-inference:1.7.2 \
-    tei-mirror)
+python <skill-path>/scripts/resolve_image_uri.py --ami-for-tag 0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker
+# prints: al2-ami-sagemaker-inference-gpu-3-1
+
+python <skill-path>/scripts/resolve_image_uri.py --ami-for-tag 0.20.0-gpu-py312-cu129-ubuntu22.04-sagemaker
+# prints: null
 ```
 
-Then pass the resulting private URI directly to `deploy.py` via `--image-uri`. This bypasses the SDK helper entirely.
-
-## VPC / NAT gateway problem
-
-SageMaker endpoints inside a VPC **without** a NAT gateway can't pull from `public.ecr.aws`. The deployment fails with an image-pull error that doesn't mention "VPC" or "egress".
-
-Two options:
-
-**A. Regional DLC URI** (default, `--family vllm`): regional ECR repos (e.g. `763104351884.dkr.ecr.<region>.amazonaws.com/vllm:...`) are reachable from SageMaker without internet egress. Path of least resistance.
-
-**B. Mirror to private ECR** (`scripts/mirror_image.sh`): pulls the public image locally, retags to a private ECR repo in your account, pushes. Idempotent. Requires Docker locally.
-
-```bash
-PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
-    public.ecr.aws/deep-learning-containers/vllm:<tag> \
-    vllm-mirror)
-```
-
-Prefer regional unless there's a specific reason to mirror.
+This is a vLLM-specific concern. TEI, DJL-LMI, and HF Inference Toolkit images don't need an AMI override.
 
 ## Configuring the vLLM DLC
 
@@ -157,4 +105,49 @@ The image expects configuration as environment variables on the SageMaker model 
 
 Any vLLM CLI flag works — uppercase, replace dashes with underscores, prepend `SM_VLLM_`.
 
-**Always pass all four required vars.** If you're tempted to omit one "to test minimally", don't — that's the path to a silent failure.
+## Configuring TEI
+
+Simpler env contract than vLLM:
+
+| Env var | Purpose | Required |
+|---|---|---|
+| `HF_MODEL_ID` | HF model ID (e.g. `BAAI/bge-large-en-v1.5`) or `/opt/ml/model` | Yes |
+| `HF_TOKEN` | HF auth token | Only for gated models |
+| `MAX_BATCH_TOKENS` | Max tokens per batch (default 16384) | No |
+| `MAX_CLIENT_BATCH_SIZE` | Max requests per client batch (default 32) | No |
+
+No host-binding to configure, no trust-remote-code flag. The architectures TEI supports (BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert) are baked into the image.
+
+## CUDA / instance compatibility
+
+Critical and easy to get wrong:
+
+| CUDA in image tag | Works on | Fails on |
+|---|---|---|
+| cu124 | g5, g6, p5 | — |
+| cu128 | g5, g6, p5 | — |
+| cu129 | g6, p5 | g5 (driver mismatch → CannotStartContainerError) |
+| cu130 | g6, p5 | g5; requires `InferenceAmiVersion=al2-ami-sagemaker-inference-gpu-3-1` |
+
+If picking an image with cu129+, avoid `ml.g5.*` instance types unless you've confirmed the specific image was built for them.
+
+## VPC / NAT gateway problem
+
+SageMaker endpoints inside a VPC **without** a NAT gateway can't pull from `public.ecr.aws`. The deployment fails with an image-pull error that doesn't mention "VPC" or "egress".
+
+For images on AWS's regional ECR (everything in the catalog): SageMaker reaches them through built-in routing, no NAT needed. Use the regional URI pattern (`<account>.dkr.ecr.<region>.amazonaws.com/...`), not the `public.ecr.aws/...` pattern.
+
+For images requiring `public.ecr.aws` access (less common): mirror to a private ECR repo in your account with `scripts/mirror_image.sh`. Requires Docker locally.
+
+```bash
+PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
+    public.ecr.aws/deep-learning-containers/vllm:<tag> \
+    vllm-mirror)
+```
+
+## When the catalog page is stale or wrong
+
+The catalog updates as new images ship. Two situations to be aware of:
+
+- **A tag was just released and isn't on the page yet**: rare; AWS updates the page on each release. If you suspect this, check the [release notes on the DLC GitHub repo](https://github.com/aws/deep-learning-containers).
+- **An architecture you need isn't supported by the listed image yet**: for TEI specifically, you can mirror the upstream image from GHCR (`ghcr.io/huggingface/text-embeddings-inference:<version>`) into private ECR and pass the resulting URI directly to `deploy.py --image-uri`. Same `mirror_image.sh` script.
