@@ -82,7 +82,6 @@ def _import_retrieve():
     """
     try:
         from sagemaker.core import image_uris
-
         return image_uris.retrieve
     except ImportError:
         raise SystemExit(
@@ -91,9 +90,7 @@ def _import_retrieve():
         )
 
 
-def resolve_tei(
-    region: str, instance_type: Optional[str], version: Optional[str] = None
-) -> str:
+def resolve_tei(region: str, instance_type: Optional[str], version: Optional[str] = None) -> str:
     """HuggingFace TEI DLC, resolved via the SDK.
 
     Not on AWS's available-images page, but the SDK has it. CPU vs GPU is
@@ -106,9 +103,7 @@ def resolve_tei(
         )
 
     retrieve = _import_retrieve()
-    framework = (
-        "huggingface-tei" if is_gpu_instance(instance_type) else "huggingface-tei-cpu"
-    )
+    framework = "huggingface-tei" if is_gpu_instance(instance_type) else "huggingface-tei-cpu"
     log(f"TEI variant: framework={framework} (instance_type={instance_type!r})")
 
     kwargs = {"framework": framework, "region": region, "image_scope": "inference"}
@@ -123,35 +118,25 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--family",
-        choices=["tei"],
-        default=None,
+        "--family", choices=["tei"], default=None,
         help="Image family to resolve. Only 'tei' is supported — all other "
-        "families are on AWS's available-images page and the agent "
-        "should read the URI from there directly.",
+             "families are on AWS's available-images page and the agent "
+             "should read the URI from there directly.",
     )
+    parser.add_argument("--region", default=None, help="AWS region (required for --family tei)")
     parser.add_argument(
-        "--region", default=None, help="AWS region (required for --family tei)"
-    )
-    parser.add_argument(
-        "--instance-type",
-        default=None,
+        "--instance-type", default=None,
         help="Target instance type. Required for --family tei to pick CPU vs GPU.",
     )
+    parser.add_argument("--version", default=None, help="Framework version override for TEI")
     parser.add_argument(
-        "--version", default=None, help="Framework version override for TEI"
-    )
-    parser.add_argument(
-        "--ami-for-tag",
-        default=None,
+        "--ami-for-tag", default=None,
         help="Helper: print the InferenceAmiVersion required for the given image tag "
-        "(or 'null' if none required). Use after picking a vLLM tag from the "
-        "AWS doc page to know whether to pass --inference-ami-version to deploy.py.",
+             "(or 'null' if none required). Use after picking a vLLM tag from the "
+             "AWS doc page to know whether to pass --inference-ami-version to deploy.py.",
     )
     parser.add_argument(
-        "--format",
-        default="uri",
-        choices=["uri", "json"],
+        "--format", default="uri", choices=["uri", "json"],
         help="'uri' prints just the image URI; 'json' includes inference_ami_version",
     )
     args = parser.parse_args()

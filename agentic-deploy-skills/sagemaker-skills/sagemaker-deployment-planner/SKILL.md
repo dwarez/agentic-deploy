@@ -1,6 +1,6 @@
 ---
 name: sagemaker-deployment-planner
-description: 'Plan and coordinate the deployment of a model to Amazon SageMaker AI. Use this skill whenever the user wants to deploy, host, serve, or expose a model on SageMaker or AWS — including phrases like "deploy a model", "put this model on SageMaker", "host this LLM on AWS", "serve this embedding model", "deploy a reranker", "create an endpoint", "serve my fine-tuned model", or any request that involves taking a model artifact and making it available for inference on AWS. Use this even when the user is vague about how they want to deploy (e.g. "I just want to get this running on AWS, you figure it out"). Works for text-generation LLMs, embedding models, rerankers, classifiers, and other transformer models — the skill picks the right serving stack downstream. This is the entry-point skill for SageMaker deployment work — it asks the right clarifying questions, picks a deployment pathway, and coordinates the other deployment skills.'
+description: 'Plan and coordinate the deployment of a model to Amazon SageMaker AI. Use this skill whenever the user wants to deploy, host, serve, or expose a model on SageMaker or AWS — including phrases like "deploy a model", "host this LLM on AWS", "serve this embedding model", "deploy a reranker", "deploy a text-to-image / diffusion model", "host this for async inference", "create an endpoint", "serve my fine-tuned model", or any request that involves making a model available for inference on AWS. Use this even when the user is vague (e.g. "I just want to get this running on AWS, you figure it out"). Works for text-generation LLMs, embedding models, rerankers, classifiers, text-to-image / diffusion models — picks the right serving stack and chooses between real-time and async inference. This is the entry-point skill for SageMaker deployment work — it asks clarifying questions, picks a deployment pathway, and coordinates the other deployment skills.'
 ---
 
 # SageMaker Deployment Planner
@@ -45,6 +45,10 @@ Do **not** front-load all of these. A common minimal set is just: *what model, a
 For LLMs, **real-time endpoints are the default** unless traffic is explicitly spiky/sparse or inference is long-running. Serverless looks attractive for "low traffic" cases but most LLMs exceed its memory limits.
 
 For **embeddings**, real-time is again the default — but CPU instances are usually the right choice (much cheaper, fast enough for most embedding workloads). Don't reflexively recommend GPU instances for embedding models; ask `serving-image-selection` to consider CPU variants if the model is small (<1B params) and traffic is moderate.
+
+For **text-to-image, video generation, or other long-inference workloads** (>30s per request) where traffic is also bursty: async inference is the right answer. It supports genuine scale-to-zero between batches and queues requests via S3, so you don't pay for idle GPU. `sagemaker-production-defaults` has a dedicated `deploy_async.py` for this.
+
+Real-time and async are the two scripted pathways. Serverless, batch transform, and Bedrock Custom Model Import are not currently scripted — for those, hand the user off with a brief explanation rather than trying to deploy them through this workflow.
 
 If two pathways are both reasonable, say so in one sentence each and pick one. Don't bury the recommendation in options.
 

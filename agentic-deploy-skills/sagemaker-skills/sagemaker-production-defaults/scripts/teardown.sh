@@ -51,14 +51,11 @@ print(variants[0]['ModelName'] if variants else '')
     fi
 fi
 
-# Alarms (named by pattern from deploy.py)
-ALARM_NAMES=(
-    "${ENDPOINT_NAME}-ModelLatencyP99"
-    "${ENDPOINT_NAME}-Invocation5XXErrors"
-    "${ENDPOINT_NAME}-OverheadLatencyP99"
-)
+# Alarms — discover by name prefix, since both real-time and async deploys
+# create alarms named "<endpoint-name>-<something>". This way teardown handles
+# either deployment mode without needing to know which one was used.
 EXISTING_ALARMS=$(aws cloudwatch describe-alarms \
-    --alarm-names "${ALARM_NAMES[@]}" --region "$REGION" \
+    --alarm-name-prefix "${ENDPOINT_NAME}-" --region "$REGION" \
     --query 'MetricAlarms[*].AlarmName' --output text 2>/dev/null || echo "")
 if [[ -n "$EXISTING_ALARMS" ]]; then
     # shellcheck disable=SC2086
@@ -66,18 +63,23 @@ if [[ -n "$EXISTING_ALARMS" ]]; then
     log "Deleted alarms: $EXISTING_ALARMS"
 fi
 
-# Autoscaling — policy first, then scalable target
+# Autoscaling policies — discover all policies on this variant rather than
+# matching by name. Real-time has 1 policy; async has 2 (target-tracking +
+# step-scaling for wake-from-zero). Discovery handles both.
 RESOURCE_ID="endpoint/${ENDPOINT_NAME}/variant/AllTraffic"
-POLICY_NAME="${ENDPOINT_NAME}-target-tracking"
 
-if aws application-autoscaling describe-scaling-policies \
-        --service-namespace sagemaker --resource-id "$RESOURCE_ID" \
-        --region "$REGION" 2>/dev/null | grep -q "$POLICY_NAME"; then
-    aws application-autoscaling delete-scaling-policy \
-        --service-namespace sagemaker --resource-id "$RESOURCE_ID" \
-        --scalable-dimension sagemaker:variant:DesiredInstanceCount \
-        --policy-name "$POLICY_NAME" --region "$REGION" || true
-    log "Deleted autoscaling policy"
+EXISTING_POLICIES=$(aws application-autoscaling describe-scaling-policies \
+    --service-namespace sagemaker --resource-id "$RESOURCE_ID" \
+    --region "$REGION" \
+    --query 'ScalingPolicies[*].PolicyName' --output text 2>/dev/null || echo "")
+if [[ -n "$EXISTING_POLICIES" ]]; then
+    for policy in $EXISTING_POLICIES; do
+        aws application-autoscaling delete-scaling-policy \
+            --service-namespace sagemaker --resource-id "$RESOURCE_ID" \
+            --scalable-dimension sagemaker:variant:DesiredInstanceCount \
+            --policy-name "$policy" --region "$REGION" || true
+        log "Deleted autoscaling policy: $policy"
+    done
 fi
 
 if aws application-autoscaling describe-scalable-targets \
