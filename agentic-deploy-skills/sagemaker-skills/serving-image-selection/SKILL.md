@@ -17,7 +17,7 @@ This page is AWS-maintained and lists every image family with example URIs, tags
 
 The example URLs use `763104351884` as the account ID for most regions. A few regions use different accounts (e.g. `eu-south-1` uses `692866216735`). Check the [Region Availability page](https://aws.github.io/deep-learning-containers/reference/region_availability/) when in doubt.
 
-**Exception: TEI is not on the AWS catalog page.** It's published separately, accessible only via the SDK. For TEI specifically, use the bundled `resolve_image_uri.py --family tei` (see below).
+**Exception: none currently.** Every image family used by this workflow is now on the AWS catalog page (TEI was added in late 2026). If you encounter a new family that isn't there, mirror it via `mirror_image.sh` and pass the resulting URI directly.
 
 ## Quick decision
 
@@ -25,7 +25,7 @@ The example URLs use `763104351884` as the account ID for most regions. A few re
 |---|---|---|
 | HuggingFace text-generation LLM (Llama, Qwen, Mistral, etc.) | vLLM (SageMaker) | AWS catalog → "vLLM (Ubuntu)" section |
 | Same as above, multimodal | vLLM-Omni | AWS catalog → "vLLM-Omni" section |
-| HuggingFace embeddings or rerankers | TEI | `resolve_image_uri.py --family tei` (not on AWS catalog) |
+| HuggingFace embeddings or rerankers | TEI | AWS catalog → "HuggingFace Text Embeddings Inference" |
 | HuggingFace classifiers, NER, QA, summarization | HF Inference Toolkit | AWS catalog → "HuggingFace PyTorch Inference" |
 | HuggingFace-curated vLLM build | HuggingFace vLLM | AWS catalog → "HuggingFace vLLM Inference" |
 | HuggingFace-curated SGLang build | HuggingFace SGLang | AWS catalog → "HuggingFace SGLang Inference" |
@@ -40,46 +40,40 @@ Full reasoning for each family in `references/model-to-image.md`.
 
 ## Workflow
 
-For every family except TEI: **read the URI from the AWS catalog page**.
+For every family: **read the URI from the AWS catalog page**.
 
 1. Open https://aws.github.io/deep-learning-containers/reference/available_images/
-2. Find the section for the right family (e.g. "vLLM (Ubuntu)" for HuggingFace LLMs)
+2. Find the section for the right family (e.g. "vLLM (Ubuntu)" for HuggingFace LLMs, "HuggingFace Text Embeddings Inference" for embeddings)
 3. Pick the newest row marked `SageMaker` for the platform column
 4. Substitute `<region>` with the user's region (from `aws-context-discovery`)
 5. For vLLM: also check the AMI requirement (see "vLLM AMI requirement" below)
-6. Pass the URI to `deploy.py --image-uri`
+6. Pass the URI to `deploy.py --image-uri` (real-time) or `deploy_async.py --image-uri` (async)
 
-For TEI: **use the bundled resolver**.
+### TEI: pick the right variant
 
-```bash
-# CPU embeddings — cheap, often the right answer for small models
-python <skill-path>/scripts/resolve_image_uri.py --family tei \
-    --region eu-west-1 --instance-type ml.c6i.2xlarge
+The TEI catalog row lists two URIs — GPU (`tei` repo) and CPU (`tei-cpu` repo). Pick based on the instance type:
 
-# GPU embeddings — needed for large embedding models or high throughput
-python <skill-path>/scripts/resolve_image_uri.py --family tei \
-    --region eu-west-1 --instance-type ml.g5.xlarge
-```
+- `ml.g*`, `ml.p*`, `ml.inf*` → GPU variant
+- `ml.c*`, `ml.m*`, `ml.t*` → CPU variant
 
-`--instance-type` is required for TEI. The resolver picks `tei` (GPU) for `ml.g*/ml.p*/ml.inf*` instances and `tei-cpu` (CPU) for everything else, then calls the SDK to get the right per-region URI.
+Mixing them fails: CPU image on a GPU instance wastes hardware, GPU image on a CPU instance fails to start.
+
+**Note on the TEI account ID**: the catalog page shows `683313688378` as the example account, but TEI is published from a different account namespace than the main AWS DLCs and the per-region account IDs vary. If `683313688378.dkr.ecr.<region>.amazonaws.com/tei:...` returns an ECR pull error for a region other than us-east-1, check the [Region Availability page](https://aws.github.io/deep-learning-containers/reference/region_availability/) for the correct account ID for that region.
 
 ## vLLM AMI requirement
 
 vLLM DLC images with **CUDA 13 or higher** (current default: `cu130`) require setting `InferenceAmiVersion=al2-ami-sagemaker-inference-gpu-3-1` on the ProductionVariant. Without it the container dies on startup with no CloudWatch logs ever created. The failure looks identical to many other things (account-level issues, quota, networking) and routinely sends people down wrong diagnostic paths.
 
-Rule of thumb: if the tag you picked contains `cu130` or later, pass `--inference-ami-version al2-ami-sagemaker-inference-gpu-3-1` to `deploy.py`.
+Lookup table:
 
-The bundled `resolve_image_uri.py` has a helper that returns the right AMI for a given tag:
+| Tag contains | InferenceAmiVersion to pass |
+|---|---|
+| `cu130` (or higher) | `al2-ami-sagemaker-inference-gpu-3-1` |
+| `cu129` or lower | (omit the flag; default AMI works) |
 
-```bash
-python <skill-path>/scripts/resolve_image_uri.py --ami-for-tag 0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker
-# prints: al2-ami-sagemaker-inference-gpu-3-1
+Rule of thumb: if the vLLM tag you picked contains `cu130` or later, pass `--inference-ami-version al2-ami-sagemaker-inference-gpu-3-1` to `deploy.py`. If a future CUDA version (cu140+) needs a different AMI, add a row to the table when AWS publishes the new image.
 
-python <skill-path>/scripts/resolve_image_uri.py --ami-for-tag 0.20.0-gpu-py312-cu129-ubuntu22.04-sagemaker
-# prints: null
-```
-
-This is a vLLM-specific concern. TEI, DJL-LMI, and HF Inference Toolkit images don't need an AMI override.
+This is a vLLM-specific concern. TEI and HF Inference Toolkit images don't need an AMI override.
 
 ## Configuring the vLLM DLC
 

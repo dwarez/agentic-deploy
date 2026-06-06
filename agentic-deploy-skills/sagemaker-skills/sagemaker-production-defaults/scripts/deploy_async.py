@@ -39,18 +39,18 @@ from _common import (
 # Defaults — change here, not at call sites.
 DEFAULTS = {
     "initial_instance_count": 1,
-    "min_capacity": 0,  # async genuinely supports scale-to-zero
+    "min_capacity": 0,                          # async genuinely supports scale-to-zero
     "max_capacity": 4,
-    "backlog_per_instance_target": 5,  # target queue depth per instance
-    "scale_in_cooldown_seconds": 600,  # slower scale-in for async — batches are bursty
+    "backlog_per_instance_target": 5,           # target queue depth per instance
+    "scale_in_cooldown_seconds": 600,           # slower scale-in for async — batches are bursty
     "scale_out_cooldown_seconds": 60,
-    "wake_from_zero_step_size": 1,  # 0→1 instance when backlog appears
+    "wake_from_zero_step_size": 1,              # 0→1 instance when backlog appears
     "max_concurrent_invocations_per_instance": 4,
     # Alarms
-    "alarm_backlog_size_threshold": 50,  # queue too deep
-    "alarm_failed_invocations_threshold": 5,  # repeated failures
+    "alarm_backlog_size_threshold": 50,         # queue too deep
+    "alarm_failed_invocations_threshold": 5,    # repeated failures
     "alarm_evaluation_periods": 1,
-    "alarm_period_seconds": 60,  # async needs faster eval for wake-from-zero
+    "alarm_period_seconds": 60,                 # async needs faster eval for wake-from-zero
     "environment_tag": "dev",
 }
 
@@ -60,17 +60,10 @@ def log(msg: str) -> None:
 
 
 def create_async_endpoint_config(
-    sm: Any,
-    *,
-    config_name: str,
-    model_name: str,
-    instance_type: str,
-    initial_instance_count: int,
-    inference_ami_version: str | None,
-    output_s3_uri: str,
-    failure_s3_uri: str | None,
-    success_topic_arn: str | None,
-    error_topic_arn: str | None,
+    sm: Any, *, config_name: str, model_name: str, instance_type: str,
+    initial_instance_count: int, inference_ami_version: str | None,
+    output_s3_uri: str, failure_s3_uri: str | None,
+    success_topic_arn: str | None, error_topic_arn: str | None,
     max_concurrent_invocations: int,
     tags: list[dict],
 ) -> str:
@@ -122,9 +115,7 @@ def create_async_endpoint_config(
     return config_name
 
 
-def create_endpoint(
-    sm: Any, *, endpoint_name: str, config_name: str, tags: list[dict]
-) -> None:
+def create_endpoint(sm: Any, *, endpoint_name: str, config_name: str, tags: list[dict]) -> None:
     log(f"Creating endpoint: {endpoint_name}")
     sm.create_endpoint(
         EndpointName=endpoint_name,
@@ -134,16 +125,9 @@ def create_endpoint(
 
 
 def register_async_autoscaling(
-    *,
-    endpoint_name: str,
-    variant_name: str,
-    min_capacity: int,
-    max_capacity: int,
-    backlog_per_instance_target: int,
-    scale_in_cooldown: int,
-    scale_out_cooldown: int,
-    wake_step_size: int,
-    region: str,
+    *, endpoint_name: str, variant_name: str, min_capacity: int, max_capacity: int,
+    backlog_per_instance_target: int, scale_in_cooldown: int, scale_out_cooldown: int,
+    wake_step_size: int, region: str,
 ) -> None:
     """Register two autoscaling policies on the variant:
 
@@ -156,9 +140,7 @@ def register_async_autoscaling(
     The step-scaling policy is invoked by a HasBacklogWithoutCapacity alarm
     (created separately in create_async_alarms).
     """
-    log(
-        f"Registering async autoscaling: min={min_capacity} max={max_capacity} backlog-target={backlog_per_instance_target}"
-    )
+    log(f"Registering async autoscaling: min={min_capacity} max={max_capacity} backlog-target={backlog_per_instance_target}")
     appscaling = boto3.client("application-autoscaling", region_name=region)
     resource_id = f"endpoint/{endpoint_name}/variant/{variant_name}"
 
@@ -213,12 +195,8 @@ def register_async_autoscaling(
 
 
 def create_async_alarms(
-    *,
-    endpoint_name: str,
-    variant_name: str,
-    sns_topic_arn: str | None,
-    region: str,
-    wake_alarm_arns_for_step_policy: list[str],
+    *, endpoint_name: str, variant_name: str, sns_topic_arn: str | None,
+    region: str, wake_alarm_arns_for_step_policy: list[str],
 ) -> None:
     """Create CloudWatch alarms for the async endpoint, including the
     HasBacklogWithoutCapacity alarm that drives the wake-from-zero policy.
@@ -269,18 +247,16 @@ def create_async_alarms(
         Namespace="AWS/SageMaker",
         Dimensions=endpoint_dim,
         Statistic="Average",
-        Period=60,  # tight evaluation: we want fast wake-up
+        Period=60,                              # tight evaluation: we want fast wake-up
         EvaluationPeriods=1,
         Threshold=1,
         ComparisonOperator="GreaterThanOrEqualToThreshold",
         TreatMissingData="notBreaching",
-        AlarmActions=wake_alarm_arns_for_step_policy,  # step policy ARNs
+        AlarmActions=wake_alarm_arns_for_step_policy,   # step policy ARNs
     )
 
     if not sns_topic_arn:
-        log(
-            "WARNING: no --sns-alarm-topic — backlog/failure alarms exist but won't notify anyone."
-        )
+        log("WARNING: no --sns-alarm-topic — backlog/failure alarms exist but won't notify anyone.")
 
 
 def get_step_policy_arn(*, endpoint_name: str, variant_name: str, region: str) -> str:
@@ -297,89 +273,54 @@ def get_step_policy_arn(*, endpoint_name: str, variant_name: str, region: str) -
     )
     policies = resp.get("ScalingPolicies", [])
     if not policies:
-        raise RuntimeError(
-            f"Step-scaling policy not found for {endpoint_name} — was register_async_autoscaling called?"
-        )
+        raise RuntimeError(f"Step-scaling policy not found for {endpoint_name} — was register_async_autoscaling called?")
     return policies[0]["PolicyARN"]
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 
+    # Required
     p.add_argument("--model-name", required=True)
     p.add_argument("--image-uri", required=True, help="From serving-image-selection")
     p.add_argument("--role-arn", required=True, help="From sagemaker-iam-preflight")
     p.add_argument("--instance-type", required=True, help="e.g. ml.g5.xlarge")
     p.add_argument("--region", required=True, help="From aws-context-discovery")
-    p.add_argument(
-        "--output-s3-uri",
-        required=True,
-        help="S3 path where async results are written. e.g. s3://my-bucket/async-output/",
-    )
+    p.add_argument("--output-s3-uri", required=True,
+                   help="S3 path where async results are written. e.g. s3://my-bucket/async-output/")
 
+    # Conditional
     p.add_argument("--model-s3-uri", default=None, help="Omit when loading from HF Hub")
     p.add_argument("--env", action="append", default=[], help="KEY=VALUE; repeatable")
-    p.add_argument(
-        "--inference-ami-version",
-        default=None,
-        help="REQUIRED for vLLM DLC with CUDA 13+ (e.g. al2-ami-sagemaker-inference-gpu-3-1)",
-    )
-    p.add_argument(
-        "--failure-s3-uri",
-        default=None,
-        help="S3 path for failed async invocations (optional; default: errors written to OutputConfig.S3OutputPath)",
-    )
-    p.add_argument(
-        "--success-sns-topic",
-        default=None,
-        help="SNS topic ARN notified when async invocation succeeds",
-    )
-    p.add_argument(
-        "--error-sns-topic",
-        default=None,
-        help="SNS topic ARN notified when async invocation fails",
-    )
+    p.add_argument("--inference-ami-version", default=None,
+                   help="REQUIRED for vLLM DLC with CUDA 13+ (e.g. al2-ami-sagemaker-inference-gpu-3-1)")
+    p.add_argument("--failure-s3-uri", default=None,
+                   help="S3 path for failed async invocations (optional; default: errors written to OutputConfig.S3OutputPath)")
+    p.add_argument("--success-sns-topic", default=None,
+                   help="SNS topic ARN notified when async invocation succeeds")
+    p.add_argument("--error-sns-topic", default=None,
+                   help="SNS topic ARN notified when async invocation fails")
 
-    p.add_argument(
-        "--endpoint-name", default=None, help="Default: <model-name>-<timestamp>"
-    )
+    # Naming
+    p.add_argument("--endpoint-name", default=None, help="Default: <model-name>-<timestamp>")
     p.add_argument("--project", default=None, help="Tag value (default: model name)")
     p.add_argument("--environment", default=DEFAULTS["environment_tag"])
 
-    p.add_argument(
-        "--initial-instance-count", type=int, default=DEFAULTS["initial_instance_count"]
-    )
-    p.add_argument(
-        "--min-capacity",
-        type=int,
-        default=DEFAULTS["min_capacity"],
-        help="Async supports 0 (scale-to-zero between batches). Default 0.",
-    )
+    # Capacity / scaling
+    p.add_argument("--initial-instance-count", type=int, default=DEFAULTS["initial_instance_count"])
+    p.add_argument("--min-capacity", type=int, default=DEFAULTS["min_capacity"],
+                   help="Async supports 0 (scale-to-zero between batches). Default 0.")
     p.add_argument("--max-capacity", type=int, default=DEFAULTS["max_capacity"])
-    p.add_argument(
-        "--backlog-per-instance-target",
-        type=int,
-        default=DEFAULTS["backlog_per_instance_target"],
-        help="Target queue depth per instance for autoscaling",
-    )
-    p.add_argument(
-        "--max-concurrent-invocations-per-instance",
-        type=int,
-        default=DEFAULTS["max_concurrent_invocations_per_instance"],
-    )
-    p.add_argument(
-        "--no-autoscaling",
-        action="store_true",
-        help="NOT RECOMMENDED for async — endpoint won't scale to zero",
-    )
+    p.add_argument("--backlog-per-instance-target", type=int,
+                   default=DEFAULTS["backlog_per_instance_target"],
+                   help="Target queue depth per instance for autoscaling")
+    p.add_argument("--max-concurrent-invocations-per-instance", type=int,
+                   default=DEFAULTS["max_concurrent_invocations_per_instance"])
+    p.add_argument("--no-autoscaling", action="store_true",
+                   help="NOT RECOMMENDED for async — endpoint won't scale to zero")
 
-    p.add_argument(
-        "--sns-alarm-topic",
-        default=None,
-        help="SNS topic ARN for backlog/failure alarms",
-    )
+    # Alarms
+    p.add_argument("--sns-alarm-topic", default=None, help="SNS topic ARN for backlog/failure alarms")
     p.add_argument("--no-alarms", action="store_true")
 
     args = p.parse_args()
@@ -408,19 +349,12 @@ def main() -> int:
     )
 
     create_model(
-        sm,
-        model_name=args.model_name,
-        image_uri=args.image_uri,
-        role_arn=args.role_arn,
-        model_s3_uri=args.model_s3_uri,
-        env=env_dict,
-        tags=tags,
-        log_prefix="deploy_async",
+        sm, model_name=args.model_name, image_uri=args.image_uri,
+        role_arn=args.role_arn, model_s3_uri=args.model_s3_uri,
+        env=env_dict, tags=tags, log_prefix="deploy_async",
     )
     create_async_endpoint_config(
-        sm,
-        config_name=config_name,
-        model_name=args.model_name,
+        sm, config_name=config_name, model_name=args.model_name,
         instance_type=args.instance_type,
         initial_instance_count=args.initial_instance_count,
         inference_ami_version=args.inference_ami_version,
@@ -436,10 +370,8 @@ def main() -> int:
 
     if not args.no_autoscaling:
         register_async_autoscaling(
-            endpoint_name=endpoint_name,
-            variant_name="AllTraffic",
-            min_capacity=args.min_capacity,
-            max_capacity=args.max_capacity,
+            endpoint_name=endpoint_name, variant_name="AllTraffic",
+            min_capacity=args.min_capacity, max_capacity=args.max_capacity,
             backlog_per_instance_target=args.backlog_per_instance_target,
             scale_in_cooldown=DEFAULTS["scale_in_cooldown_seconds"],
             scale_out_cooldown=DEFAULTS["scale_out_cooldown_seconds"],
@@ -448,25 +380,17 @@ def main() -> int:
         )
         # The wake-from-zero alarm needs the step policy's ARN as its action.
         step_policy_arn = get_step_policy_arn(
-            endpoint_name=endpoint_name,
-            variant_name="AllTraffic",
-            region=args.region,
+            endpoint_name=endpoint_name, variant_name="AllTraffic", region=args.region,
         )
     else:
-        log(
-            "WARNING: autoscaling skipped. Endpoint will NOT scale (in either direction)."
-        )
+        log("WARNING: autoscaling skipped. Endpoint will NOT scale (in either direction).")
         step_policy_arn = None
 
     if not args.no_alarms:
         create_async_alarms(
-            endpoint_name=endpoint_name,
-            variant_name="AllTraffic",
-            sns_topic_arn=args.sns_alarm_topic,
-            region=args.region,
-            wake_alarm_arns_for_step_policy=[step_policy_arn]
-            if step_policy_arn
-            else [],
+            endpoint_name=endpoint_name, variant_name="AllTraffic",
+            sns_topic_arn=args.sns_alarm_topic, region=args.region,
+            wake_alarm_arns_for_step_policy=[step_policy_arn] if step_policy_arn else [],
         )
 
     # Summary
@@ -480,9 +404,7 @@ def main() -> int:
         autoscaling_summary = f"{args.min_capacity}-{args.max_capacity} instances (scale-to-zero {zero_label})"
     log(f"  Autoscaling:        {autoscaling_summary}")
     log(f"  Output S3 path:     {args.output_s3_uri}")
-    log(
-        f"  Notifications:      success={args.success_sns_topic or 'none'} error={args.error_sns_topic or 'none'}"
-    )
+    log(f"  Notifications:      success={args.success_sns_topic or 'none'} error={args.error_sns_topic or 'none'}")
     log("")
     log("Invoke (async, via S3 input location):")
     log(f"  aws sagemaker-runtime invoke-endpoint-async \\")
@@ -493,19 +415,15 @@ def main() -> int:
     log("")
     log(f"Teardown: bash teardown.sh {endpoint_name} {args.region}")
 
-    print(
-        json.dumps(
-            {
-                "endpoint_name": endpoint_name,
-                "endpoint_config_name": config_name,
-                "model_name": args.model_name,
-                "region": args.region,
-                "instance_type": args.instance_type,
-                "inference_mode": "async",
-                "output_s3_uri": args.output_s3_uri,
-            }
-        )
-    )
+    print(json.dumps({
+        "endpoint_name": endpoint_name,
+        "endpoint_config_name": config_name,
+        "model_name": args.model_name,
+        "region": args.region,
+        "instance_type": args.instance_type,
+        "inference_mode": "async",
+        "output_s3_uri": args.output_s3_uri,
+    }))
 
     return 0
 

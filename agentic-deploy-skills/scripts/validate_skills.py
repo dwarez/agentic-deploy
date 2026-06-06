@@ -32,9 +32,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    sys.stderr.write(
-        "ERROR: PyYAML is required. Install with: pip install pyyaml\n"
-    )
+    sys.stderr.write("ERROR: PyYAML is required. Install with: pip install pyyaml\n")
     sys.exit(2)
 
 
@@ -115,7 +113,7 @@ def read_shebang(path: Path) -> str:
     """First line of the file, or '' if unreadable."""
     try:
         return path.read_text().splitlines()[0] if path.read_text() else ""
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return ""
 
 
@@ -149,7 +147,9 @@ def check_skill_md(skill_md: Path, result: ValidationResult) -> dict | None:
         return None
 
     if not isinstance(frontmatter, dict):
-        result.error(f"{rel}: frontmatter must be a YAML mapping, got {type(frontmatter).__name__}")
+        result.error(
+            f"{rel}: frontmatter must be a YAML mapping, got {type(frontmatter).__name__}"
+        )
         return None
 
     # Required fields
@@ -193,7 +193,9 @@ def check_skill_md(skill_md: Path, result: ValidationResult) -> dict | None:
     return frontmatter
 
 
-def check_script_references(skill_md: Path, skills_root: Path, result: ValidationResult) -> None:
+def check_script_references(
+    skill_md: Path, skills_root: Path, result: ValidationResult
+) -> None:
     """Verify scripts referenced in SKILL.md body actually exist on disk.
 
     Handles two forms:
@@ -212,11 +214,13 @@ def check_script_references(skill_md: Path, skills_root: Path, result: Validatio
 
     # Skip the frontmatter — we only check refs in the body
     m = FRONTMATTER_RE.match(content)
-    body = content[m.end():] if m else content
+    body = content[m.end() :] if m else content
 
     for match in SCRIPT_REF_RE.finditer(body):
-        skill_prefix = match.group(1)  # None for same-skill, sibling name for cross-skill
-        script_path = match.group(2)   # "scripts/foo.sh"
+        skill_prefix = match.group(
+            1
+        )  # None for same-skill, sibling name for cross-skill
+        script_path = match.group(2)  # "scripts/foo.sh"
 
         if skill_prefix:
             # Cross-skill reference like `other-skill/scripts/foo.py`
@@ -234,7 +238,12 @@ def check_script_references(skill_md: Path, skills_root: Path, result: Validatio
 
 
 def check_python_script(path: Path, result: ValidationResult) -> None:
-    """Validate a Python script: parses, has shebang, is executable."""
+    """Validate a Python script: parses, has shebang, is executable.
+
+    Files named with a leading underscore (e.g. `_common.py`) are treated as
+    library modules — they're imported by other scripts rather than executed
+    directly. We still check syntax but skip the shebang/executable checks.
+    """
     result.checks_run += 1
 
     # Syntax
@@ -245,6 +254,11 @@ def check_python_script(path: Path, result: ValidationResult) -> None:
         return
     except (OSError, UnicodeDecodeError) as e:
         result.error(f"{path}: cannot read file: {e}")
+        return
+
+    # Library modules (underscore-prefixed filenames) don't need shebangs or
+    # the executable bit set — they're imported, not run.
+    if path.name.startswith("_"):
         return
 
     # Shebang
@@ -261,9 +275,7 @@ def check_python_script(path: Path, result: ValidationResult) -> None:
 
     # Executable bit
     if not is_executable(path):
-        result.error(
-            f"{path}: not executable. Run: chmod +x {path}"
-        )
+        result.error(f"{path}: not executable. Run: chmod +x {path}")
 
 
 def check_shell_script(path: Path, result: ValidationResult) -> None:
@@ -283,9 +295,7 @@ def check_shell_script(path: Path, result: ValidationResult) -> None:
         return
 
     if completed.returncode != 0:
-        result.error(
-            f"{path}: bash syntax error: {completed.stderr.strip()}"
-        )
+        result.error(f"{path}: bash syntax error: {completed.stderr.strip()}")
         return
 
     try:
@@ -321,9 +331,7 @@ def check_shell_script(path: Path, result: ValidationResult) -> None:
 
     # Executable bit
     if not is_executable(path):
-        result.error(
-            f"{path}: not executable. Run: chmod +x {path}"
-        )
+        result.error(f"{path}: not executable. Run: chmod +x {path}")
 
 
 def check_json_file(path: Path, result: ValidationResult) -> None:
@@ -347,11 +355,15 @@ def check_no_junk_files(root: Path, result: ValidationResult) -> None:
 
         for d in dirnames:
             if d in JUNK_FILE_PATTERNS:
-                result.error(f"{Path(dirpath) / d}: junk directory committed (should be gitignored)")
+                result.error(
+                    f"{Path(dirpath) / d}: junk directory committed (should be gitignored)"
+                )
         for f in filenames:
             for pattern in JUNK_FILE_PATTERNS:
                 if pattern in f:
-                    result.error(f"{Path(dirpath) / f}: junk file committed (should be gitignored)")
+                    result.error(
+                        f"{Path(dirpath) / f}: junk file committed (should be gitignored)"
+                    )
                     break
 
 
@@ -371,9 +383,7 @@ def validate_directory(root: Path) -> ValidationResult:
         return result
 
     # Find skill directories (anything that contains a SKILL.md)
-    skill_dirs = sorted(
-        p.parent for p in root.glob("*/SKILL.md")
-    )
+    skill_dirs = sorted(p.parent for p in root.glob("*/SKILL.md"))
 
     if not skill_dirs:
         result.error(

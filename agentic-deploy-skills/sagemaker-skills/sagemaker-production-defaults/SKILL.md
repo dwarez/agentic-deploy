@@ -61,7 +61,8 @@ Where each value comes from:
 
 | Parameter | Source |
 |---|---|
-| `--image-uri`, `--inference-ami-version` | `serving-image-selection` (`resolve_image_uri.py --format json`) |
+| `--image-uri` | `serving-image-selection` — agent reads from the AWS DLC catalog page |
+| `--inference-ami-version` | `serving-image-selection` — required for vLLM tags containing cu130+ |
 | `--role-arn` | `sagemaker-iam-preflight` (`check_role.sh`) |
 | `--region` | `aws-context-discovery` |
 | `--instance-type` | User input or planner recommendation |
@@ -70,18 +71,23 @@ Where each value comes from:
 
 The script creates resources in order with error handling, waits for `InService` (up to 30 min), surfaces failure reasons, registers autoscaling and alarms, and prints a summary including the teardown command. Outputs a JSON blob on stdout with endpoint/config/model names for downstream scripting.
 
-### Chaining the resolver
+### Picking the image URI
+
+The agent reads the image URI from AWS's [Deep Learning Containers catalog](https://aws.github.io/deep-learning-containers/reference/available_images/) — pick the row that matches the model family (vLLM for LLMs, TEI for embeddings, etc.), substitute `<region>` with the deployment region, and pass to `deploy.py --image-uri`.
+
+For vLLM specifically, also check the tag's CUDA version:
 
 ```bash
-RESOLVED=$(python serving-image-selection/scripts/resolve_image_uri.py \
-    --family vllm --region "$REGION" --format json)
-IMAGE_URI=$(echo "$RESOLVED" | python -c "import json,sys; print(json.load(sys.stdin)['image_uri'])")
-AMI=$(echo "$RESOLVED" | python -c "import json,sys; v=json.load(sys.stdin)['inference_ami_version']; print(v or '')")
+# Example: vLLM 0.21.0 from the catalog
+IMAGE_URI="763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker"
 
-python deploy.py --image-uri "$IMAGE_URI" ${AMI:+--inference-ami-version "$AMI"} ...
+# cu130 tag → must pass --inference-ami-version
+python deploy.py --image-uri "$IMAGE_URI" \
+    --inference-ami-version al2-ami-sagemaker-inference-gpu-3-1 \
+    ...
 ```
 
-When `inference_ami_version` is `null` (older CUDA or non-vLLM), omit the flag.
+For tags with `cu129` or lower, omit `--inference-ami-version`. See `serving-image-selection` for the full vLLM AMI lookup table and the env-var requirements for each image family.
 
 ## Async inference deployments
 

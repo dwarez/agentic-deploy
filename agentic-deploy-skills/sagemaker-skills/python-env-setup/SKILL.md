@@ -1,6 +1,6 @@
 ---
 name: python-env-setup
-description: 'Set up an isolated Python environment for SageMaker / AWS work, with the right Python version and current boto3 / sagemaker-core. Use this skill whenever Python code will be executed for a SageMaker deployment, training job, or any AWS automation — including when about to run `pip install`, when about to invoke `boto3`, when creating or activating a virtualenv, or when the user asks to "set up the environment". Never use system Python and never `pip install` into it. Always isolate. This skill prevents the most common failure modes: wrong Python version, dependency conflicts, and stale SDKs.'
+description: 'Set up an isolated Python environment for SageMaker / AWS work, with the right Python version and current boto3. Use this skill whenever Python code will be executed for a SageMaker deployment, training job, or any AWS automation — including when about to run `pip install`, when about to invoke `boto3`, when creating or activating a virtualenv, or when the user asks to "set up the environment". Never use system Python and never `pip install` into it. Always isolate. This skill prevents the most common failure modes: wrong Python version, dependency conflicts, and stale SDKs.'
 ---
 
 # Python Environment Setup for SageMaker
@@ -11,20 +11,22 @@ Most SageMaker deployment failures that look like AWS problems are actually Pyth
 
 1. **Never use the system Python.** Always work inside an isolated environment.
 2. **Pin the Python version, not the package versions.** Use 3.10, 3.11, or 3.12. Avoid 3.13+ — ML libraries lag on wheel availability and dependency resolution breaks in confusing ways.
-3. **Install the latest of each package.** Don't defensively pin `boto3`, `awscli`, or `sagemaker-core`. Newer ones have current API surfaces, more accurate URI resolution tables for new image families, and security fixes. Only pin if the user explicitly requires a specific version.
+3. **Install the latest of each package.** Don't defensively pin `boto3` or `awscli`. Newer ones have current API surfaces and security fixes. Only pin if the user explicitly requires a specific version.
 4. **Check installed versions correctly.** Use `importlib.metadata.version("package-name")`, never `module.__version__`. The latter is inconsistent across packages.
-5. **Use boto3 + sagemaker-core, not the full `sagemaker` meta-package.** See "Why sagemaker-core only" below.
+5. **Use `boto3` directly, not the SageMaker Python SDK.** See "Why no SageMaker SDK" below.
 
-## Why `sagemaker-core` only (and only for TEI)
+## Why no SageMaker SDK
 
-The SageMaker SDK v3 split into separate packages. We install `sagemaker-core` for a single specific reason: resolving the TEI image URI. Everything else either goes through boto3 directly or is read from AWS's [available-images catalog](https://aws.github.io/deep-learning-containers/reference/available_images/) by the agent.
+The SageMaker Python SDK (`sagemaker`, `sagemaker-core`, `sagemaker-serve`) is **not** a dependency of this project. Our scripts use `boto3` directly and read image URIs from [AWS's published Deep Learning Containers catalog](https://aws.github.io/deep-learning-containers/reference/available_images/) rather than resolving them through the SDK.
 
-- **`sagemaker-core`** — has `image_uris.retrieve()` plus resource-shape definitions. We use *only* the URI resolver, and *only* for TEI (the catalog page doesn't list TEI). All other image families are read from the catalog page directly. If AWS adds TEI to the catalog, we can drop this dependency.
-- **`sagemaker-serve`** — contains `ModelBuilder`, an opinionated high-level builder that collapses model definition + endpoint config + deployment into one fluent call. This conflicts with our explicit-stages design. We don't import from this package.
-- **`sagemaker-train`** — training-side counterpart. We're inference-only, so we don't need it.
-- **`sagemaker`** (the meta-package) — pulls in all of the above plus older v2 shims. Too much surface area for what we need. Avoid.
+Reasons:
 
-If a future contributor reaches for `from sagemaker.serve import ModelBuilder`, push back. For image URIs, the answer is either the AWS catalog page or `from sagemaker.core import image_uris` (for TEI only). For deploy orchestration, the answer is boto3 directly (which `deploy.py` already uses).
+- **The SDK is a moving target.** Major rewrites between v2 and v3, and ongoing regressions in v3 (e.g. SSO assumed-role credential bugs in `ModelTrainer` / `FrameworkProcessor`). Pinning to a specific SDK version trades one set of breakage for another.
+- **`ModelBuilder` (the v3 high-level builder) is opaque.** It collapses model definition, endpoint config, and deployment into one fluent call, which conflicts with our explicit-stages design where each skill returns a value the next skill consumes.
+- **The catalog page is the canonical source.** AWS maintains it for every published DLC family with current URIs, tags, and CUDA versions. Reading from there is simpler than reimplementing version resolution against the SDK's internal JSON tables.
+- **`boto3` is stable.** It's the underlying AWS API client and doesn't break across SageMaker SDK releases.
+
+If a future contributor reaches for `from sagemaker...`, push back. Image URIs come from the catalog page; deploy orchestration uses boto3 directly (which `deploy.py` and `deploy_async.py` already do).
 
 ## How to set up
 
@@ -41,11 +43,11 @@ Manual equivalent:
 ```bash
 # Preferred: uv
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python --upgrade boto3 awscli sagemaker-core
+uv pip install --python .venv/bin/python --upgrade boto3 awscli
 
 # Fallback: stdlib venv
 python3.12 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip boto3 awscli sagemaker-core
+.venv/bin/python -m pip install --upgrade pip boto3 awscli
 ```
 
 After setup, **invoke the env's Python explicitly** rather than `source .venv/bin/activate`:
@@ -62,7 +64,7 @@ This works the same in scripts, interactive shells, and agent tool calls.
 .venv/bin/python <skill-path>/scripts/check_versions.py
 ```
 
-Prints versions of `boto3`, `botocore`, `awscli`, `sagemaker-core`. Uses `importlib.metadata.version()` so it works on every package, including ones without `__version__`. Pass arbitrary names: `... check_versions.py transformers huggingface_hub`.
+Prints versions of `boto3`, `botocore`, `awscli`. Uses `importlib.metadata.version()` so it works on every package, including ones without `__version__`. Pass arbitrary names: `... check_versions.py transformers huggingface_hub`.
 
 ## Deployment-specific extras
 
@@ -76,8 +78,8 @@ Almost always Python 3.13+ trying to install packages without wheels yet, or ins
 **`pip install` succeeded but the script says "module not found"**
 You installed into a different interpreter than the one running the script. Always invoke Python explicitly: `.venv/bin/python -m pip install ...` and `.venv/bin/python deploy.py`.
 
-**boto3 or sagemaker-core call fails with "unknown parameter" or "Unsupported version"**
-Your package is older than the API / image table. Upgrade with `.venv/bin/python -m pip install --upgrade boto3 sagemaker-core`. Don't downgrade the script to match an old SDK. For `sagemaker-core` "Unsupported X" errors, the error message itself lists the currently-supported values — copy from there.
+**boto3 call fails with "unknown parameter"**
+Your boto3 is older than the API surface. Upgrade with `.venv/bin/python -m pip install --upgrade boto3`. Don't downgrade the script to match an old version.
 
 **Someone tries to install `sagemaker` (the meta-package)**
-Point them at "Why sagemaker-core only" above. The meta-package brings in `sagemaker-serve.ModelBuilder` which we deliberately avoid.
+Point them at "Why no SageMaker SDK" above. The SDK isn't a dependency — we deliberately avoid the whole package tree.

@@ -7,8 +7,6 @@ The canonical source for AWS Deep Learning Container image URIs is:
 
 This page is AWS-maintained and lists every published image family with example URIs, tags, CUDA versions, and platform (SageMaker vs EC2/ECS/EKS). Read URIs from there directly — substitute `<region>` with the user's region and pass to `deploy.py --image-uri`. The doc below explains *which* family to pick for which use case; the URI itself comes from the AWS page.
 
-The one exception is TEI, which isn't on the AWS page but is available via the SDK. See "TEI" below.
-
 ## Decision summary
 
 | Model family | Container | Source |
@@ -17,7 +15,7 @@ The one exception is TEI, which isn't on the AWS page but is available via the S
 | Same as above, multimodal (vision-language) | vLLM-Omni | AWS catalog → "vLLM-Omni" |
 | HuggingFace-curated vLLM build (transformers pre-installed) | HuggingFace vLLM | AWS catalog → "HuggingFace vLLM Inference" |
 | Same family, alternative serving stack | DJL-LMI | AWS catalog → "DJL Inference" |
-| HuggingFace embeddings + rerankers | **TEI DLC** | `resolve_image_uri.py --family tei` |
+| HuggingFace embeddings + rerankers | **TEI DLC** | AWS catalog → "HuggingFace Text Embeddings Inference" |
 | HuggingFace classifiers, NER, QA, summarization | HF Inference Toolkit | AWS catalog → "HuggingFace PyTorch Inference" |
 | HuggingFace-curated SGLang build | HuggingFace SGLang | AWS catalog → "HuggingFace SGLang Inference" |
 | SGLang (without HF wrapper) | SGLang | AWS catalog → "SGLang" |
@@ -45,24 +43,23 @@ Example: `763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.21.0-gpu-py312-cu1
 
 For environment variable configuration of the vLLM DLC, see the SKILL.md.
 
-## TEI DLC (not on the AWS catalog)
+## TEI DLC
 
-TEI isn't listed on AWS's available-images page, but it's published and accessible via the SageMaker SDK's `image_uris.retrieve()`. The bundled `resolve_image_uri.py --family tei` calls the SDK to get the right URI.
+Listed on the AWS catalog under "HuggingFace Text Embeddings Inference". The catalog row uses account ID `683313688378` (different from the main `763104351884` used by most other DLCs). TEI is published from its own account namespace and the per-region account IDs vary — if the canonical `683313688378` returns an ECR pull error for a non-us-east-1 region, check the [Region Availability page](https://aws.github.io/deep-learning-containers/reference/region_availability/) for the correct mapping.
 
-Two variants by instance type:
-- `ml.g*`, `ml.p*`, `ml.inf*` → GPU variant (`tei` repo)
-- `ml.c*`, `ml.m*`, `ml.t*` → CPU variant (`tei-cpu` repo)
+Two variants:
+
+- Repo `tei` — GPU build
+- Repo `tei-cpu` — CPU build
+
+Pick by instance type:
+- `ml.g*`, `ml.p*`, `ml.inf*` → `tei` (GPU)
+- `ml.c*`, `ml.m*`, `ml.t*` → `tei-cpu` (CPU)
 
 CPU embeddings are dramatically cheaper than GPU and often fast enough — `ml.c6i.2xlarge` (~$0.20/hr) is a common starting point. GPU is needed for large embedding models (>1B params) or sustained high throughput.
 
-Multi-region: the SDK has per-region account IDs (e.g. `141502667606` in eu-west-1, `683313688378` in us-east-1).
+### Supported architectures and staleness
 
-TEI supports BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert. The AWS-published DLC sometimes lags upstream by months — if a recent architecture isn't supported, mirror the upstream image from `ghcr.io/huggingface/text-embeddings-inference:<version>` using `scripts/mirror_image.sh` and pass the result to `deploy.py --image-uri` directly.
+TEI bakes architecture support into the image. The current upstream version supports BERT, CamemBERT, RoBERTa, XLM-RoBERTa, NomicBert, JinaBert, JinaCodeBert, Mistral, Qwen2/3, Gemma2/3, ModernBert. The AWS-published DLC sometimes lags upstream by months — if a recent architecture isn't supported, mirror the upstream image from `ghcr.io/huggingface/text-embeddings-inference:<version>` using `scripts/mirror_image.sh` and pass the result to `deploy.py --image-uri` directly.
 
 For environment variable configuration of TEI, see the SKILL.md.
-
-## When AWS adds TEI to the catalog
-
-If/when AWS adds TEI to https://aws.github.io/deep-learning-containers/reference/available_images/, the `--family tei` path in the resolver can be deleted — the agent would read TEI URIs from the catalog like everything else. The resolver script would shrink to just the `--ami-for-tag` helper.
-
-A request to add TEI to the catalog has been (or should be) filed with AWS. Track that and simplify when it lands.
