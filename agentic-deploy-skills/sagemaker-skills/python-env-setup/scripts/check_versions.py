@@ -6,13 +6,13 @@ the inconsistently-defined `module.__version__`).
 
 Usage:
     python check_versions.py
-    python check_versions.py sagemaker boto3 transformers
+    python check_versions.py boto3 botocore transformers
 """
 
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
-DEFAULT_PACKAGES = ["sagemaker", "boto3", "botocore", "awscli"]
+DEFAULT_PACKAGES = ["boto3", "botocore", "awscli"]
 
 
 def main() -> int:
