@@ -219,7 +219,7 @@ def main() -> int:
         help=(
             "REQUIRED for vLLM DLC with CUDA 13+ (e.g. al2-ami-sagemaker-inference-gpu-3-1). "
             "Without this, container dies on startup with no logs. "
-            "Use serving-image-selection's resolve_image_uri.py --format json to get this value."
+            "See serving-image-selection's 'vLLM AMI requirement' table to map a tag to the AMI version."
         ),
     )
 

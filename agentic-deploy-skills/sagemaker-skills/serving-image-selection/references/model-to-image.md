@@ -39,7 +39,7 @@ URI pattern (from AWS catalog):
 
 Example: `763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.21.0-gpu-py312-cu130-ubuntu22.04-sagemaker`
 
-**vLLM AMI requirement**: images with `cu130` or higher require setting `InferenceAmiVersion=al2-ami-sagemaker-inference-gpu-3-1` on the ProductionVariant. Without it the container dies on startup with no CloudWatch logs created. Use `resolve_image_uri.py --ami-for-tag <tag>` to determine the right AMI for a given tag.
+**vLLM AMI requirement**: images with `cu130` or higher require setting `InferenceAmiVersion=al2-ami-sagemaker-inference-gpu-3-1` on the ProductionVariant. Without it the container dies on startup with no CloudWatch logs created. See the "vLLM AMI requirement" lookup table in the SKILL.md to map a tag to the right AMI version.
 
 For environment variable configuration of the vLLM DLC, see the SKILL.md.
 

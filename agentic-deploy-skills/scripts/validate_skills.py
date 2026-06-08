@@ -113,7 +113,7 @@ def read_shebang(path: Path) -> str:
     """First line of the file, or '' if unreadable."""
     try:
         return path.read_text().splitlines()[0] if path.read_text() else ""
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 

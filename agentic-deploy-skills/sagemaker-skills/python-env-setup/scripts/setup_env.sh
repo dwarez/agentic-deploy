@@ -9,7 +9,7 @@ set -euo pipefail
 VENV_DIR="${1:-.venv}"
 PYTHON_VERSION="${2:-3.12}"
 
-# 3.10–3.12 is the safe zone for SageMaker SDK + modern boto3.
+# 3.10–3.12 is the safe zone for modern boto3 + awscli.
 # 3.13+ may work but ML libs lag on wheel availability.
 SUPPORTED_MIN="3.10"
 SUPPORTED_MAX="3.12"
