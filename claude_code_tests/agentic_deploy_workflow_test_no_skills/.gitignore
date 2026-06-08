@@ -1,5 +1,0 @@
-.venv/
-.env
-.role-arn
-__pycache__/
-*.pyc

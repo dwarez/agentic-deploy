@@ -35,6 +35,11 @@ deploy_run.out
 # Scratch / attempt files
 *.attempt*
 
+# Agent eval scratch — kept local, not part of the published skills
+claude_code_tests/
+codex_tests/
+kiro_test/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

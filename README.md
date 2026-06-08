@@ -58,9 +58,9 @@ See `agentic-deploy-skills/scripts/README.md` for what it does and doesn't cover
 
 ```
 agentic-deploy-skills/      # the skill bundle (the deliverable)
+  install.sh                # symlink/copy skills into an agent's skills dir
   sagemaker-skills/         # one directory per skill
   scripts/validate_skills.py
-claude_code_tests/          # eval scratch — agent runs with/without skills
-codex_tests/                # eval scratch
-kiro_test/                  # eval scratch
 ```
+
+Agent eval runs (`claude_code_tests/`, `codex_tests/`, `kiro_test/`) are kept local and gitignored — they're not part of the published skills.
