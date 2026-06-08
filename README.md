@@ -19,6 +19,20 @@ Live in `agentic-deploy-skills/sagemaker-skills/`. `sagemaker-deployment-planner
 
 Each skill is a directory with a `SKILL.md` plus bundled `scripts/` and `references/`.
 
+## Install
+
+Symlink the skills into your agent's skills directory (auto-detects Claude Code and Codex):
+
+```bash
+cd agentic-deploy-skills
+bash install.sh                 # all detected agents; symlinks → `git pull` keeps them current
+bash install.sh --claude        # Claude Code only (~/.claude/skills)
+bash install.sh --copy          # standalone copies instead of symlinks
+bash install.sh --uninstall     # remove what it installed
+```
+
+Idempotent, and won't clobber unrelated entries without `--force`. See `bash install.sh --help`.
+
 ## Deployment flow
 
 ```
