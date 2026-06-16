@@ -9,6 +9,19 @@ Every SageMaker resource needs an **execution role** — the IAM role SageMaker 
 
 This skill encodes the right order: discover, validate, only create if necessary.
 
+## Running the helpers (cross-platform)
+
+The helpers are Python so they run identically on Windows, macOS, and Linux:
+
+```bash
+python3 <skill-path>/scripts/check_role.py        # macOS / Linux
+python  <skill-path>/scripts/check_role.py        # Windows (PowerShell / cmd)
+```
+
+**Run them from the shell where the AWS CLI already works** — i.e. wherever `aws sts get-caller-identity` succeeds. The script shells out to that same `aws` binary and inherits the shell's profile, region, SSO session, proxy, and credential chain.
+
+> **Windows / WSL / Git Bash caveat.** Do **not** invoke these through a Bash shim (WSL, Git Bash, MSYS) on Windows. Those Bash environments frequently do **not** share the Windows AWS config, credentials, SSO sessions, environment variables, or proxy settings — so `aws sts get-caller-identity` fails inside Bash even when it works natively in PowerShell. (This is exactly why the old `.sh` helpers failed on Windows and were replaced with Python.) If you're in PowerShell, run `python ...\check_role.py` directly in PowerShell. If the helper still can't see your identity, run the same discovery natively (see "Native AWS CLI equivalent" below) in the shell where `aws sts get-caller-identity` returns your ARN.
+
 ## Order of operations
 
 ### Step 1 — Did the user provide a role?
@@ -16,7 +29,7 @@ This skill encodes the right order: discover, validate, only create if necessary
 Validate that one specifically:
 
 ```bash
-bash <skill-path>/scripts/check_role.sh "<role-name-or-arn>"
+python3 <skill-path>/scripts/check_role.py "<role-name-or-arn>"
 ```
 
 On success it prints the ARN to stdout (exit 0). On failure it logs why on stderr. Don't try to silently fix a broken role — surface the problem.
@@ -24,7 +37,7 @@ On success it prints the ARN to stdout (exit 0). On failure it logs why on stder
 ### Step 2 — Discover existing roles
 
 ```bash
-bash <skill-path>/scripts/check_role.sh
+python3 <skill-path>/scripts/check_role.py
 ```
 
 Lists roles matching common SageMaker patterns (`AmazonSageMaker-ExecutionRole-*`, `SageMakerExecutionRole*`, etc.), **ranks by last-used date** (most recent first), validates trust policy in that order, returns the first usable ARN. Most accounts that have used SageMaker before already have one.
@@ -36,7 +49,7 @@ Why rank by last-used: in accounts with multiple roles (auto-generated 2021 role
 **If the user can create** (has IAM permissions):
 
 ```bash
-bash <skill-path>/scripts/create_role.sh "<role-name>" "<model-bucket>"
+python3 <skill-path>/scripts/create_role.py "<role-name>" "<model-bucket>"
 ```
 
 Second arg scopes S3 access to a specific bucket. Omit if unknown; script warns and the user can update the policy later.
@@ -55,7 +68,7 @@ Specific instructions get unblocked fast; vague "permission denied" messages don
 
 A role is usable when (1) it exists, (2) its trust policy allows `sagemaker.amazonaws.com` to `sts:AssumeRole` — see `references/trust-policy.json` for the canonical form.
 
-`check_role.sh` verifies these two. It does **not** deep-check permissions because comprehensive analysis is expensive (`iam:SimulatePrincipalPolicy` per action) and most existing SageMaker roles are over-permissioned via `AmazonSageMakerFullAccess`. If you suspect a permissions issue at deploy time, the deployment error will tell you which action was denied — fix it then, not preemptively.
+`check_role.py` verifies these two. It does **not** deep-check permissions because comprehensive analysis is expensive (`iam:SimulatePrincipalPolicy` per action) and most existing SageMaker roles are over-permissioned via `AmazonSageMakerFullAccess`. If you suspect a permissions issue at deploy time, the deployment error will tell you which action was denied — fix it then, not preemptively.
 
 ## Minimum permissions
 
@@ -64,4 +77,23 @@ A role is usable when (1) it exists, (2) its trust policy allows `sagemaker.amaz
 - ECR pull permissions
 - CloudWatch logs and metrics
 
-Layered on top of `AmazonSageMakerFullAccess` (attached by `create_role.sh`). Replace `REPLACE_WITH_MODEL_BUCKET` in the template with the actual bucket name — `create_role.sh` does this automatically when given a bucket as its second argument.
+Layered on top of `AmazonSageMakerFullAccess` (attached by `create_role.py`). Replace `REPLACE_WITH_MODEL_BUCKET` in the template with the actual bucket name — `create_role.py` does this automatically when given a bucket as its second argument.
+
+## Native AWS CLI equivalent (fallback)
+
+If the Python helper can't run or can't see your identity (rare — usually a broken PATH or running under a Bash shim that lacks AWS context), do the same preflight by hand in the shell where `aws sts get-caller-identity` works. The logic is just AWS CLI calls; the helper exists only to bundle and rank them.
+
+PowerShell:
+
+```powershell
+# 1. List candidate SageMaker roles
+aws iam list-roles --query "Roles[?contains(RoleName,'SageMaker') || contains(RoleName,'sagemaker')]" --output json
+
+# 2. For each candidate, confirm the trust policy allows sagemaker.amazonaws.com
+aws iam get-role --role-name <role-name> --query "Role.AssumeRolePolicyDocument" --output json
+
+# 3. Prefer the most-recently-used role with SageMaker-execution naming
+aws iam get-role --role-name <role-name> --query "Role.RoleLastUsed.LastUsedDate" --output text
+```
+
+Pick the most-recently-used role whose trust policy contains `sagemaker.amazonaws.com`. Use the resulting ARN exactly as if `check_role.py` had returned it. Bash/macOS/Linux use the same commands.

@@ -63,13 +63,59 @@ Where each value comes from:
 |---|---|
 | `--image-uri` | `serving-image-selection` — agent reads from the AWS DLC catalog page |
 | `--inference-ami-version` | `serving-image-selection` — required for vLLM tags containing cu130+ |
-| `--role-arn` | `sagemaker-iam-preflight` (`check_role.sh`) |
+| `--role-arn` | `sagemaker-iam-preflight` (`check_role.py`) |
 | `--region` | `aws-context-discovery` |
 | `--instance-type` | User input or planner recommendation |
 | `--env` | Model-specific; see `serving-image-selection` for required `SM_VLLM_*` vars |
 | `--model-s3-uri` | Optional — S3 path to model artifacts; omit if loading from HF Hub |
 
 The script creates resources in order with error handling, waits for `InService` (up to 30 min), surfaces failure reasons, registers autoscaling and alarms, and prints a summary including the teardown command. Outputs a JSON blob on stdout with endpoint/config/model names for downstream scripting.
+
+## Testing a real-time endpoint
+
+Once the endpoint is `InService`, test it with the bundled helper. It is cross-platform and **BOM-safe** — use it instead of hand-writing a payload file and calling `invoke-endpoint` directly:
+
+```bash
+# macOS / Linux
+python3 <skill-path>/scripts/invoke_endpoint.py \
+    --endpoint-name <endpoint-name> \
+    --payload '{"inputs": "Hello"}' \
+    --region "$REGION"
+```
+
+```powershell
+# Windows (PowerShell)
+python <skill-path>\scripts\invoke_endpoint.py `
+    --endpoint-name <endpoint-name> `
+    --payload-file payload.json `
+    --region $REGION
+```
+
+It accepts either `--payload '<json>'` (inline) or `--payload-file <path>`, validates JSON, writes the request body as plain UTF-8, invokes the endpoint, and prints the response body to stdout.
+
+### The UTF-8 BOM gotcha (Windows)
+
+If you write the request payload yourself on Windows, **do not** use `Set-Content -Encoding UTF8` — depending on the PowerShell version it prepends a UTF-8 byte-order mark (BOM). SageMaker's JSON parser rejects a BOM with a 400 `ModelError`:
+
+```
+Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+```
+
+This is **not** a model, endpoint-health, or image problem — only the file encoding of the request body. `invoke_endpoint.py` avoids it entirely (it even strips a BOM from a `--payload-file` that already has one). If you must call the CLI directly, write the body as BOM-free UTF-8:
+
+```powershell
+# BOM-free UTF-8 — use this
+[System.IO.File]::WriteAllText((Resolve-Path "payload.json"), $json, [System.Text.UTF8Encoding]::new($false))
+
+aws sagemaker-runtime invoke-endpoint `
+    --endpoint-name <endpoint-name> `
+    --content-type application/json `
+    --body fileb://payload.json `
+    --region $REGION `
+    response.json
+```
+
+**Fallback:** if any invocation fails with `Unexpected UTF-8 BOM`, rewrite the payload as BOM-free UTF-8 (or re-run via `invoke_endpoint.py`) and retry once before treating the endpoint or model as broken.
 
 ### Picking the image URI
 
@@ -151,7 +197,9 @@ aws sagemaker-runtime invoke-endpoint-async \
 aws s3 cp s3://my-bucket/async-output/<inference-id>.out result.json
 ```
 
-Teardown works the same as real-time: `bash teardown.sh <endpoint-name>` (the teardown script discovers policies and alarms by name prefix, so it handles both deployment modes).
+The same UTF-8 BOM caveat applies to the `input.json` you upload (see "The UTF-8 BOM gotcha" above) — if you build it on Windows, write it as BOM-free UTF-8 or the container's JSON parser will reject it.
+
+Teardown works the same as real-time: `python3 <skill-path>/scripts/teardown.py <endpoint-name>` (the teardown script discovers policies and alarms by name prefix, so it handles both deployment modes).
 
 ## Defaults at a glance
 
@@ -183,7 +231,8 @@ If the user reports "data capture isn't showing up", check the role's S3 access.
 ## Teardown
 
 ```bash
-bash <skill-path>/scripts/teardown.sh <endpoint-name> <region>
+python3 <skill-path>/scripts/teardown.py <endpoint-name> <region>   # macOS / Linux
+python  <skill-path>\scripts\teardown.py <endpoint-name> <region>   # Windows
 ```
 
 Deletes in safe order: alarms → autoscaling → endpoint (stops billing) → endpoint config → model. Idempotent.

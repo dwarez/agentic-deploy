@@ -30,33 +30,35 @@ If a future contributor reaches for `from sagemaker...`, push back. Image URIs c
 
 ## How to set up
 
-The fastest path is the bundled script:
+The fastest path is the bundled script — it's Python, so it runs the same on Windows, macOS, and Linux:
 
 ```bash
-bash <skill-path>/scripts/setup_env.sh
+python3 <skill-path>/scripts/setup_env.py        # macOS / Linux
+python  <skill-path>/scripts/setup_env.py        # Windows (PowerShell / cmd)
 ```
 
-This script detects `uv` and uses it if available (faster), falls back to `venv`, creates `.venv/` with Python 3.12 (override: `bash setup_env.sh .venv 3.11`), refuses unsupported Python versions, installs from the bundled `requirements.txt`, and is idempotent.
+This script detects `uv` and uses it if available (faster), falls back to the stdlib `venv` module, creates `.venv/` with Python 3.12 (override: `python3 setup_env.py .venv 3.11`), refuses unsupported Python versions, installs from the bundled `requirements.txt`, and is idempotent. It also prints the correct interpreter path for the host OS (see below).
 
 Manual equivalent:
 
 ```bash
 # Preferred: uv
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python --upgrade boto3 awscli
+uv pip install --python .venv/bin/python --upgrade boto3 awscli   # Windows: .venv\Scripts\python.exe
 
 # Fallback: stdlib venv
 python3.12 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip boto3 awscli
 ```
 
-After setup, **invoke the env's Python explicitly** rather than `source .venv/bin/activate`:
+After setup, **invoke the env's Python explicitly** rather than activating the venv. The interpreter path differs by platform:
 
 ```bash
-.venv/bin/python deploy.py
+.venv/bin/python deploy.py            # macOS / Linux
+.venv\Scripts\python.exe deploy.py    # Windows
 ```
 
-This works the same in scripts, interactive shells, and agent tool calls.
+This works the same in scripts, interactive shells, and agent tool calls. The rest of this skill writes `.venv/bin/python` for brevity — on Windows substitute `.venv\Scripts\python.exe`.
 
 ## Verifying
 
@@ -73,7 +75,7 @@ Default `requirements.txt` covers SageMaker orchestration. Some deployments need
 ## Common pitfalls
 
 **Mysterious `pip install` resolution errors**
-Almost always Python 3.13+ trying to install packages without wheels yet, or installing into a polluted system Python. Recreate at 3.12: `rm -rf .venv && bash setup_env.sh .venv 3.12`.
+Almost always Python 3.13+ trying to install packages without wheels yet, or installing into a polluted system Python. Recreate at 3.12: delete `.venv` and re-run `python3 setup_env.py .venv 3.12` (the script recreates the env when the version doesn't match, so you can also just re-run it).
 
 **`pip install` succeeded but the script says "module not found"**
 You installed into a different interpreter than the one running the script. Always invoke Python explicitly: `.venv/bin/python -m pip install ...` and `.venv/bin/python deploy.py`.

@@ -412,8 +412,9 @@ def main() -> int:
     log(f"    --input-location s3://YOUR-INPUT-BUCKET/path/to/input.json \\")
     log(f"    --content-type application/json --region {args.region}")
     log(f"  # Result will land at: {args.output_s3_uri}")
+    log("  # Write input.json as BOM-free UTF-8 (on Windows, NOT 'Set-Content -Encoding UTF8')")
     log("")
-    log(f"Teardown: bash teardown.sh {endpoint_name} {args.region}")
+    log(f"Teardown: python3 teardown.py {endpoint_name} {args.region}")
 
     print(json.dumps({
         "endpoint_name": endpoint_name,

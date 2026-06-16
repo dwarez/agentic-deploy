@@ -56,4 +56,4 @@ When enabled: 100% sampling, both input and output captured. URI defaults to `s3
 
 ## Teardown
 
-`bash teardown.sh <endpoint-name>` deletes endpoint → endpoint config → model in safe order. Autoscaling targets and alarms cleaned up separately. Data capture S3 objects are NOT deleted — that's the user's call.
+`python3 scripts/teardown.py <endpoint-name>` deletes endpoint → endpoint config → model in safe order. Autoscaling targets and alarms cleaned up separately. Data capture S3 objects are NOT deleted — that's the user's call.
