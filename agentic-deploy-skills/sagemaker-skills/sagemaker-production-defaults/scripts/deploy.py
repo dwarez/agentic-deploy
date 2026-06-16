@@ -305,10 +305,10 @@ def main() -> int:
     log(f"  Autoscaling:     {'OFF' if args.no_autoscaling else f'{args.min_capacity}-{args.max_capacity} instances'}")
     log(f"  Data capture:    {args.data_capture_s3_uri if args.enable_data_capture else 'OFF (pass --enable-data-capture)'}")
     log("")
-    log(f"Test:     aws sagemaker-runtime invoke-endpoint --endpoint-name {endpoint_name} \\")
-    log(f"            --content-type application/json --body '{{\"prompt\": \"hello\"}}' \\")
-    log(f"            --region {args.region} /tmp/response.json && cat /tmp/response.json")
-    log(f"Teardown: bash teardown.sh {endpoint_name} {args.region}")
+    log(f"Test:     python3 invoke_endpoint.py --endpoint-name {endpoint_name} \\")
+    log(f"            --payload '{{\"prompt\": \"hello\"}}' --region {args.region}")
+    log("          (BOM-safe + cross-platform; use 'python' on Windows)")
+    log(f"Teardown: python3 teardown.py {endpoint_name} {args.region}")
 
     # Machine-readable summary for downstream scripting
     print(json.dumps({

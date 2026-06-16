@@ -17,7 +17,7 @@ This page is AWS-maintained and lists every image family with example URIs, tags
 
 The example URLs use `763104351884` as the account ID for most regions. A few regions use different accounts (e.g. `eu-south-1` uses `692866216735`). Check the [Region Availability page](https://aws.github.io/deep-learning-containers/reference/region_availability/) when in doubt.
 
-**Exception: none currently.** Every image family used by this workflow is now on the AWS catalog page (TEI was added in late 2026). If you encounter a new family that isn't there, mirror it via `mirror_image.sh` and pass the resulting URI directly.
+**Exception: none currently.** Every image family used by this workflow is now on the AWS catalog page (TEI was added in late 2026). If you encounter a new family that isn't there, mirror it via `mirror_image.py` and pass the resulting URI directly.
 
 ## Quick decision
 
@@ -131,12 +131,19 @@ SageMaker endpoints inside a VPC **without** a NAT gateway can't pull from `publ
 
 For images on AWS's regional ECR (everything in the catalog): SageMaker reaches them through built-in routing, no NAT needed. Use the regional URI pattern (`<account>.dkr.ecr.<region>.amazonaws.com/...`), not the `public.ecr.aws/...` pattern.
 
-For images requiring `public.ecr.aws` access (less common): mirror to a private ECR repo in your account with `scripts/mirror_image.sh`. Requires Docker locally.
+For images requiring `public.ecr.aws` access (less common): mirror to a private ECR repo in your account with `scripts/mirror_image.py` (cross-platform; needs Docker + the `aws` CLI). Run it from the shell where the AWS CLI works.
 
 ```bash
-PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
+# macOS / Linux
+PRIVATE_URI=$(python3 <skill-path>/scripts/mirror_image.py \
     public.ecr.aws/deep-learning-containers/vllm:<tag> \
     vllm-mirror)
+```
+
+```powershell
+# Windows (PowerShell) — capture stdout into a variable
+$PRIVATE_URI = python <skill-path>\scripts\mirror_image.py `
+    public.ecr.aws/deep-learning-containers/vllm:<tag> vllm-mirror
 ```
 
 ## When the catalog page is stale or wrong
@@ -144,4 +151,4 @@ PRIVATE_URI=$(bash <skill-path>/scripts/mirror_image.sh \
 The catalog updates as new images ship. Two situations to be aware of:
 
 - **A tag was just released and isn't on the page yet**: rare; AWS updates the page on each release. If you suspect this, check the [release notes on the DLC GitHub repo](https://github.com/aws/deep-learning-containers).
-- **An architecture you need isn't supported by the listed image yet**: for TEI specifically, you can mirror the upstream image from GHCR (`ghcr.io/huggingface/text-embeddings-inference:<version>`) into private ECR and pass the resulting URI directly to `deploy.py --image-uri`. Same `mirror_image.sh` script.
+- **An architecture you need isn't supported by the listed image yet**: for TEI specifically, you can mirror the upstream image from GHCR (`ghcr.io/huggingface/text-embeddings-inference:<version>`) into private ECR and pass the resulting URI directly to `deploy.py --image-uri`. Same `mirror_image.py` script.
