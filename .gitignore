@@ -39,6 +39,7 @@ deploy_run.out
 claude_code_tests/
 codex_tests/
 kiro_test/
+.pi
 
 # OS / editor cruft
 .DS_Store

@@ -40,7 +40,7 @@ deployment-planner → aws-context-discovery → python-env-setup
    → serving-image-selection → iam-preflight → production-defaults
 ```
 
-The production deploy scripts (`deploy.py`, `deploy_async.py`) consume the values the earlier skills produce (region, image URI, role ARN) and emit a machine-readable JSON summary. Tear down with `teardown.sh <endpoint-name> <region>`.
+The production deploy scripts (`deploy.py`, `deploy_async.py`) consume the values the earlier skills produce (region, image URI, role ARN) and emit a machine-readable JSON summary. Tear down with `teardown.py <endpoint-name> <region>`.
 
 ## Validation
 
